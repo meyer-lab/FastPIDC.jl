@@ -70,18 +70,6 @@ function get_mi_scores(nodes, number_of_nodes, estimator, base; config::PIDCConf
 
 end
 
-# # Gets the proportional unique contribution between all pairs of Nodes.
-# function get_puc_scores(nodes, number_of_nodes, estimator, base;
-#     config::PIDCConfig = PIDCConfig())
-
-#     if config.triplet_block_k <= 0
-#         # Full legacy PUC
-#         return compute_puc_full(nodes; estimator = estimator, base = base)
-#     else
-#         # Pruned, neighbor-based PUC
-#         return compute_puc_pruned(nodes; estimator = estimator, base = base, config = config)
-#     end
-# end
 
 function get_puc_scores(nodes, number_of_nodes, estimator, base;
     config::PIDCConfig = PIDCConfig())
@@ -147,13 +135,114 @@ function get_weights(inference, scores, number_of_nodes, nodes)
 end
 
 """
+    Build a symmetric Boolean mask keep[i,j] indicating which gene-gene
+    pairs should be kept, based on an MI k-NN graph
+
+    - For each gene i, we take its top-k MI neighbors (excluding itself)
+    - We then symmetrize: if j is in the top-k for i or i is in the top-k for j,
+    then keep[i,j] = keep[j,i] = true
+    - If k >= n - 1 we return an all-true mask, i.e. no pruning
+"""
+function build_knn_mask(mi_scores::AbstractMatrix{Float64}, k::Int)
+    n = size(mi_scores, 1)
+    @assert size(mi_scores, 2) == n "MI matrix must be square"
+
+    # If k is huge (or <= 0), just keep everything: no pruning
+    if k <= 0 || k >= n - 1
+        return trues(n, n)
+    end
+
+    keep = falses(n, n)
+
+    for i in 1:n
+        row = view(mi_scores, i, :)
+
+        # Get indices of top-k MI values in row i (descending order)
+        # (This may include i itself; we filter that out below)
+        idxs = partialsortperm(row, 1:k; rev = true)
+
+        for j in idxs
+            j == i && continue  # skip self
+            keep[i, j] = true
+            keep[j, i] = true   # symmetrize
+        end
+    end
+
+    return keep
+end
+
+
+"""
+
+Construct edges for PUC / PIDC when triplet pruning is enabled.
+
+    - Uses an MI-based k-NN mask from mi_scores and config.triplet_block_k
+    - Keeps a single, undirected edge for each unordered pair (i,j) with i < j
+    and keep[i,j] == true (so no AB/BA duplicate entries)
+    - When triplet_block_k == 0 or k >= n-1, falls back to the unpruned
+    behavior (all pairs kept)
+"""
+function build_edges_with_mi_pruning(
+    nodes::Vector{Node},
+    weights::AbstractMatrix{Float64},
+    mi_scores::AbstractMatrix{Float64};
+    config::PIDCConfig = PIDCConfig(),
+)
+    n = length(nodes)
+    @assert size(weights, 1) == n && size(weights, 2) == n
+    @assert size(mi_scores, 1) == n && size(mi_scores, 2) == n
+
+    k = config.triplet_block_k
+
+    # If pruning is disabled or k is effectively "all neighbors",
+    # behave like the legacy code and keep all unordered pairs.
+    if k <= 0 || k >= n - 1
+        edges = Edge[]
+        sizehint!(edges, binomial(n, 2))
+
+        for i in 1:n
+            node1 = nodes[i]
+            for j in i+1:n
+                node2 = nodes[j]
+                push!(edges, Edge([node1, node2], weights[i, j]))
+            end
+        end
+
+        sort!(edges; by = get_weight, rev = true)
+        return edges
+    end
+
+    # Otherwise: MI-based pruning
+    keep = build_knn_mask(mi_scores, k)
+
+    edges = Edge[]
+    # Heuristic upper bound: ~ 2k neighbors per node ⇒ O(2kn) unordered edges
+    sizehint!(edges, min(binomial(n, 2), 2k * n))
+
+    # NOTE: we only create an edge for i<j to match the original undirected API.
+    for i in 1:n
+        node1 = nodes[i]
+        for j in i+1:n
+            keep[i, j] || continue
+            node2 = nodes[j]
+            push!(edges, Edge([node1, node2], weights[i, j]))
+        end
+    end
+
+    sort!(edges; by = get_weight, rev = true)
+    return edges
+end
+
+
+
+"""
 InferredNetwork type. Represents a weighted, fully connected network, where an
 edges's weight indicates the relative confidence of that edge existing in the true
 network.
 
 Fields:
-* `nodes`: array of all the nodes, in an arbitrary order
-* `edges`: array of all the edges, in descending order of weight
+* nodes: array of all the nodes, in an arbitrary order
+* edges: array of all the edges, in descending order of weight
 """
 struct InferredNetwork
     nodes::Array{Node}
@@ -171,54 +260,79 @@ end
 # the joint distributions are estimated using other estimators, this assumption is
 # violated for PUC and PIDC in get_puc and get_joint_probabilities.)
 # - base: base for the information measures
-function InferredNetwork(inference::AbstractNetworkInference, nodes::Array{Node}; estimator = "maximum_likelihood", base = 2, config::PIDCConfig = PIDCConfig())
-
-    # Constants and containers
+function InferredNetwork(
+    inference::AbstractNetworkInference,
+    nodes::Array{Node};
+    estimator::String = "maximum_likelihood",
+    base::Int = 2,
+    config::PIDCConfig = PIDCConfig(),
+)
     number_of_nodes = length(nodes)
-    edges = Array{Edge}(undef, binomial(number_of_nodes, 2))
 
-    # # Get the raw scores (Unchanged logic; just forward config)
-    # scores = get_puc(inference) ?
-    #     get_puc_scores(nodes, number_of_nodes, estimator, base; config = config) :
-    #     get_mi_scores(nodes, number_of_nodes, estimator, base; config = config)
-    # Get raw scores
     if get_puc(inference)
+        # ===== PUC / PIDC branch =====
         mi_scores, scores = get_puc_scores(
             nodes, number_of_nodes, estimator, base; config = config
         )
 
-        # Only dump MI for PIDC (not PUC)
+        # Optional MI dump (PIDC only)
         if isa(inference, PIDCNetworkInference) && config.dump_mi_path !== nothing
             dump_mi_scores(mi_scores, nodes, config)
         end
+
+        # Apply context if necessary (PIDC = true, PUC = false)
+        if apply_context(inference)
+            weights = get_weights(inference, scores, number_of_nodes, nodes)
+        else
+            weights = scores
+        end
+
+        # Build edges: pruned vs full
+        edges =
+            if config.triplet_block_k > 0
+                # MI-based k-NN pruning
+                build_edges_with_mi_pruning(nodes, weights, mi_scores; config = config)
+            else
+                # Legacy behavior: fully connected (one edge per unordered pair)
+                e = Edge[]
+                sizehint!(e, binomial(number_of_nodes, 2))
+                for i in 1:number_of_nodes
+                    node1 = nodes[i]
+                    for j in i+1:number_of_nodes
+                        node2 = nodes[j]
+                        push!(e, Edge([node1, node2], weights[i, j]))
+                    end
+                end
+                sort!(e; by = get_weight, rev = true)
+                e
+            end
+
+        return InferredNetwork(nodes, edges)
+
     else
+        # ===== MI / CLR branch (no PUC) =====
         scores = get_mi_scores(
             nodes, number_of_nodes, estimator, base; config = config
         )
-    end
-    
-    # Apply context if necessary
-    if apply_context(inference)
-        weights = get_weights(inference, scores, number_of_nodes, nodes)
-    else
-        weights = scores
-    end
 
-    # Get edges from scores
-    index = 0
-    for i in 1 : number_of_nodes
-        node1 = nodes[i]
-        for j in i+1 : number_of_nodes
-            index += 1
-            node2 = nodes[j]
-            edges[index] = Edge(
-                [node1, node2],
-                weights[i, j]
-            )
+        if apply_context(inference)
+            weights = get_weights(inference, scores, number_of_nodes, nodes)
+        else
+            weights = scores
         end
+
+        edges = Array{Edge}(undef, binomial(number_of_nodes, 2))
+        index = 0
+        for i in 1:number_of_nodes
+            node1 = nodes[i]
+            for j in i+1:number_of_nodes
+                index += 1
+                node2 = nodes[j]
+                edges[index] = Edge([node1, node2], weights[i, j])
+            end
+        end
+        sort!(edges; by = get_weight, rev = true)
+
+        return InferredNetwork(nodes, edges)
     end
-    sort!(edges; by = get_weight, rev = true)
-
-    return InferredNetwork(nodes, edges)
-
 end
