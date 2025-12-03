@@ -119,9 +119,19 @@ end
     @info "PUC timing (toy)" full = t_full.time pruned = t_pruned.time
     @info "PUC allocations (toy)" full = t_full.bytes pruned = t_pruned.bytes
 
+    # Edge counts ≈ TSV lengths
+    full_edges   = length(t_full.value.edges)
+    pruned_edges = length(t_pruned.value.edges)
+
+    @info "PIDC edge counts (union mode, toy)" full_edges = full_edges pruned_edges = pruned_edges
+
+    # Optional soft sanity check: pruning really prunes
+    @test pruned_edges < full_edges
+
     open(TIMINGS_PATH, "a") do io
         println(io, "toy_200_puc_full_union\t$(t_full.time)\t$(t_full.bytes)")
         println(io, "toy_200_puc_pruned_union\t$(t_pruned.time)\t$(t_pruned.bytes)")
+        println(io, "toy_200_puc_pruned_union edges vs full\t$(pruned_edges)\t$(full_edges)")
     end
 
     # Soft assertion:
@@ -169,9 +179,19 @@ end
     @info "PUC timing (target mode, toy)" full = t_full.time target = t_tar.time
     @info "PUC allocations (target mode, toy)" full = t_full.bytes target = t_tar.bytes
 
+    # Edge counts ≈ TSV lengths
+    full_edges   = length(t_full.value.edges)
+    pruned_edges = length(t_tar.value.edges)
+
+    @info "PIDC edge counts (target mode, toy)" full_edges = full_edges pruned_edges = pruned_edges
+
+    # Optional soft sanity check: pruning really prunes
+    @test pruned_edges < full_edges
+
     open(TIMINGS_PATH, "a") do io
         println(io, "toy_200_puc_full_target\t$(t_full.time)\t$(t_full.bytes)")
         println(io, "toy_200_puc_pruned_target\t$(t_tar.time)\t$(t_tar.bytes)")
+        println(io, "toy_200_puc_pruned_target edges vs full\t$(pruned_edges)\t$(full_edges)")
     end
 
     # Soft assertion:

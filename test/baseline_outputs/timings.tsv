@@ -1,12 +1,9 @@
 phase	wall_seconds	alloc_bytes
-toy_200_first	4.528864333	7360107943
-toy_200_second	4.352923958	7359709376
-toy_200_puc_full_union	4.818659292	7359930393
-toy_200_puc_pruned_union	4.465809083	6435809504
-toy_200_puc_full_target	4.726543375	7359711360
-toy_200_puc_pruned_target	4.190409334	5849069632
-toy_large_1k_puc_full	188.962107125	339378072679
-toy_large_1k_puc_pruned_union_threads	90.670274083	93051871888
-toy_large_1k_puc_pruned_union_distributed	89.283816375	93035886720
-toy_large_1k_puc_pruned_target_threads	78.628489708	75867770160
-toy_large_1k_puc_pruned_target_distributed	79.347015125	75857046852
+toy_200_first	3.863665792	4969475904
+toy_200_second	3.842587375	4966771056
+toy_200_puc_full_union	3.75799575	4966858512
+toy_200_puc_pruned_union	4.063303167	6109663360
+toy_200_puc_pruned_union edges vs full	3222	19900
+toy_200_puc_full_target	4.06145425	4966774512
+toy_200_puc_pruned_target	3.94358275	5569815280
+toy_200_puc_pruned_target edges vs full	3222	19900
