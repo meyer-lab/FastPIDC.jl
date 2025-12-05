@@ -1,4 +1,4 @@
-module NetworkInference
+module FastPIDC
 
 using InformationMeasures
 using Distributions

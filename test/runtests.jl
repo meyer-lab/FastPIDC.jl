@@ -6,8 +6,7 @@ if nprocs() == 1
 end
 
 # Make sure all workers load the package
-@everywhere using NetworkInference
-
+@everywhere using FastPIDC
 @info "Parallel config" nthreads = Threads.nthreads() nprocs = nprocs() workers = workers()
 
 using Test

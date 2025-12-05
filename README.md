@@ -105,8 +105,7 @@ If multiple processes are available, NetworkInference will distribute the most c
 ```
 $ ./julia -p 3
 
-julia> using NetworkInference
-
+julia> using FastPIDC
 julia> infer_network(<path to data file>, PIDCNetworkInference())
 ```
 

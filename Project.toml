@@ -1,5 +1,5 @@
-name = "NetworkInference"
-uuid = "6b44d3db-2bc5-5ac3-b70f-26aa69b1b11b"
+name = "FastPIDC"
+uuid = "2e136e29-5425-4b9c-aa6d-e9e617c08fea"
 version = "0.1.1"
 
 [compat]

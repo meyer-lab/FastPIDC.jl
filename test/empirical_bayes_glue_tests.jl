@@ -1,9 +1,9 @@
-using NetworkInference
+using FastPIDC
 using Test
 using DelimitedFiles
 
 # Only run tests if the EmpiricalBayes package exists
-if NetworkInference.EB_EXISTS
+if FastPIDC.EB_EXISTS
 
 using EmpiricalBayes
 

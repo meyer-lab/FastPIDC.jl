@@ -1,6 +1,6 @@
 using Test, DelimitedFiles
 using .BaselineHelpers
-using NetworkInference
+using FastPIDC
 using Distributed
 
 # Paths
@@ -271,11 +271,25 @@ end
 #     @info "Large toy PUC timings (s)" full = t_full.time union_thr = t_union_thr.time union_dist = t_union_dist.time target_thr = t_target_thr.time target_dist = t_target_dist.time
 #     @info "Large toy PUC allocations (bytes)" full = t_full.bytes union_thr = t_union_thr.bytes union_dist = t_union_dist.bytes target_thr = t_target_thr.bytes target_dist = t_target_dist.bytes
 
+#       # Edge counts ≈ TSV lengths
+#       full_edges   = length(t_full.value.edges)
+#       union_pruned_edges = length(t_union_dist.value.edges)
+#       target_pruned_edges = length(t_target_dist.value.edges)
+  
+#       @info "PIDC edge counts (union mode, toy)" full_edges = full_edges pruned_edges = union_pruned_edges
+#       @info "PIDC edge counts (target mode, toy)" full_edges = full_edges pruned_edges = target_pruned_edges
+  
+#       # Optional soft sanity check: pruning really prunes
+#       @test union_pruned_edges < full_edges
+#       @test target_pruned_edges < full_edges
+
 #     open(TIMINGS_PATH, "a") do io
 #         println(io, "toy_large_1k_puc_full\t$(t_full.time)\t$(t_full.bytes)")
 #         println(io, "toy_large_1k_puc_pruned_union_threads\t$(t_union_thr.time)\t$(t_union_thr.bytes)")
 #         println(io, "toy_large_1k_puc_pruned_union_distributed\t$(t_union_dist.time)\t$(t_union_dist.bytes)")
 #         println(io, "toy_large_1k_puc_pruned_target_threads\t$(t_target_thr.time)\t$(t_target_thr.bytes)")
 #         println(io, "toy_large_1k_puc_pruned_target_distributed\t$(t_target_dist.time)\t$(t_target_dist.bytes)")
+#         println(io, "toy_large_1k_puc_pruned_union_distributed edges vs full\t$(union_pruned_edges)\t$(full_edges)")
+#         println(io, "toy_large_1k_puc_pruned_target_distributed edges vs full\t$(target_pruned_edges)\t$(full_edges)")
 #     end
 # end

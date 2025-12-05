@@ -1,6 +1,6 @@
 module BaselineHelpers
 
-using NetworkInference, DelimitedFiles
+using FastPIDC, DelimitedFiles
 
 export run_all_networks, save_matrix, save_edges_tsv
 

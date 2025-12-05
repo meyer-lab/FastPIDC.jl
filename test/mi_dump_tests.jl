@@ -1,7 +1,6 @@
 using Test
 using DelimitedFiles
-using NetworkInference
-
+using FastPIDC
 const DATA_DIR = joinpath(dirname(@__FILE__), "data")
 const OUT_DIR  = joinpath(dirname(@__FILE__), "baseline_outputs")
 isdir(OUT_DIR) || mkpath(OUT_DIR)
