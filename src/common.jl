@@ -25,8 +25,6 @@ Base.@kwdef struct PIDCConfig
     topk_edges::Int = 0                         # reserved for candidate-edge-only PUC
     discretizer::String = "bayesian_blocks"     # mirrors existing default
     estimator::String = "maximum_likelihood"    # mirrors existing default
-    dpi_hybrid::Bool = false                    # May not touch
-    dpi_gamma::Float64 = 0.0                    # May not touch
     dump_mi_path::Union{Nothing,String} = nothing  # If nothing => don't dump
     dump_mi_fraction::Float64 = 1.0                # 0–1; 1.0 = all pairs
 end
