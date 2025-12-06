@@ -86,11 +86,10 @@ Scalability / pruning:
    INT   k for PUC triplet pruning (0 = full PUC). Default: 0
   --neighbor-mode STR     'union' (default) or 'target' for pruning neighborhood.
   --triplet-backend STR   'threads' (default) or 'distributed' for PUC backend.
-  --topk-edges INT        Reserved for candidate-edge-only PUC (currently unused).
 
 MI dump:
   --dump-mi-path PATH     If set, dump MI scores here (TSV).
-  --dump-mi-fraction F    Fraction of MI pairs to dump in descending order [0–1].
+  --dump-mi-fraction F    Fraction of MI pairs to dump in descending order [0-1].
                           Default: 1.0
 
 Other:
@@ -182,6 +181,7 @@ function main()
     println("  triplet_backend  = $(cfg.triplet_backend)")
     println("  dump_mi_path     = $(cfg.dump_mi_path === nothing ? "none" : cfg.dump_mi_path)")
     println("  dump_mi_fraction = $(cfg.dump_mi_fraction)")
+    println("  verbose = $(cfg.verbose)")
     println()
 
     # ----------------- Run PIDC ----------------
