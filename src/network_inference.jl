@@ -49,8 +49,7 @@ end
 
 # Gets the mutual information between all pairs of Nodes.
 function get_mi_scores(nodes, number_of_nodes, estimator, base; config::PIDCConfig = PIDCConfig())
-
-    # Legacy path
+     # Legacy path
     function get_mi(node1, node2, i, j, base, mi_scores)
         probabilities, probabilities1, probabilities2 = get_joint_probabilities(node1, node2, estimator)
         mi = apply_mutual_information_formula(probabilities, probabilities1, probabilities2, base)
@@ -61,6 +60,9 @@ function get_mi_scores(nodes, number_of_nodes, estimator, base; config::PIDCConf
     mi_scores = SharedArray{Float64}(number_of_nodes, number_of_nodes)
 
     @sync @distributed for i in 1 : number_of_nodes
+        if config.verbose && i % 500 == 0
+            println("[FastPIDC] Distributed MI progress: x = $i / $number_of_nodes")
+        end
         for j in i+1 : number_of_nodes
             get_mi(nodes[i], nodes[j], i, j, base, mi_scores)
         end
@@ -73,6 +75,9 @@ end
 
 function get_puc_scores(nodes, number_of_nodes, estimator, base;
     config::PIDCConfig = PIDCConfig())
+    if config.verbose
+        println("[FastPIDC] Computing PUC scores.")
+    end
     if config.triplet_block_k > 0
         # Pruned PUC
         if config.triplet_backend == :distributed
@@ -277,11 +282,17 @@ function InferredNetwork(
 
         # Optional MI dump (PIDC only)
         if isa(inference, PIDCNetworkInference) && config.dump_mi_path !== nothing
+            if config.verbose
+                println("[FastPIDC] Writing MI scores.")
+            end
             dump_mi_scores(mi_scores, nodes, config)
         end
 
         # Apply context if necessary (PIDC = true, PUC = false)
         if apply_context(inference)
+            if config.verbose
+                println("[FastPIDC] Context weighting.")
+            end
             weights = get_weights(inference, scores, number_of_nodes, nodes)
         else
             weights = scores

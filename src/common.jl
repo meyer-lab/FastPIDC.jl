@@ -22,11 +22,12 @@ Base.@kwdef struct PIDCConfig
     triplet_block_k::Int = 0                    # 0 => full PUC (Stage 3A), >0 => pruned PUC
     neighbor_mode::Symbol = :union              # :union (default) or :target
     triplet_backend::Symbol = :threads          # :threads (default) or :distributed
-    topk_edges::Int = 0                         # reserved for candidate-edge-only PUC
     discretizer::String = "bayesian_blocks"     # mirrors existing default
     estimator::String = "maximum_likelihood"    # mirrors existing default
     dump_mi_path::Union{Nothing,String} = nothing  # If nothing => don't dump
     dump_mi_fraction::Float64 = 1.0                # 0–1; 1.0 = all pairs
+    verbose::Bool = false
+
 end
 
 

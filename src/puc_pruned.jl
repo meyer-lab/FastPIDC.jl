@@ -107,6 +107,10 @@ function compute_puc_pruned(nodes::Vector{Node};
     # We parallelize over x; each (x,z) pair is handled exactly once with z > x,
     # and we always update (x,z) & (z,x) together, so there are no write races.
     Threads.@threads for x in 1:n
+        # ---- Progress logging ----
+        if config.verbose && x % 500 == 0 && Threads.threadid() == 1
+            println("[FastPIDC] Threads PUC progress: x = $x / $n")
+        end
         for z in x+1:n
             # Build candidate set K(x,z) = neighbors[x] ∪ neighbors[z]
             # (deduplicated, excluding x and z). We do this via sort + unique
@@ -171,6 +175,9 @@ function compute_puc_pruned(nodes::Vector{Node};
     # for target=z and once for target=x, as in compute_puc_full).
 
     Threads.@threads for x in 1:n
+        if config.verbose && x % 500 == 0 && Threads.threadid() == 1
+            println("[FastPIDC] Threads PUC progress: x = $x / $n")
+        end
         for z in x+1:n
             # --- target = z, sources = (x, y), y in neighbors[z] ----------
             for y in neighbors[z]
@@ -209,6 +216,8 @@ function compute_puc_pruned(nodes::Vector{Node};
     else
         error("Unknown neighbor_mode = $(mode); expected :union or :target")
     end
-
+    if config.verbose
+        println("[FastPIDC] Finished PUC computation.")
+    end
     return mi_scores, puc_scores
 end

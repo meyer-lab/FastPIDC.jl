@@ -2,7 +2,7 @@
 
 julia_version = "1.12.2"
 manifest_format = "2.0"
-project_hash = "6e923a9b4d31d3acd5ce89b3def06d9a2ceeb900"
+project_hash = "f242379323e56ce883b3d243b90fc53c14e7b6b9"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -85,6 +85,12 @@ version = "0.9.5"
 deps = ["ArgTools", "FileWatching", "LibCURL", "NetworkOptions"]
 uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 version = "1.7.0"
+
+[[deps.FastPIDC]]
+deps = ["DelimitedFiles", "Distributed", "Distributions", "InformationMeasures", "Pkg", "SharedArrays"]
+path = "."
+uuid = "2e136e29-5425-4b9c-aa6d-e9e617c08fea"
+version = "0.1.1"
 
 [[deps.FileWatching]]
 uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
@@ -202,12 +208,6 @@ version = "1.11.0"
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
 version = "2025.5.20"
-
-[[deps.NetworkInference]]
-deps = ["DelimitedFiles", "Distributed", "Distributions", "InformationMeasures", "Pkg", "SharedArrays"]
-path = "."
-uuid = "6b44d3db-2bc5-5ac3-b70f-26aa69b1b11b"
-version = "0.1.1"
 
 [[deps.NetworkOptions]]
 uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"

@@ -86,7 +86,8 @@ end
 
     cfg_full = PIDCConfig(triplet_block_k = 0)           # full PUC
     cfg_big  = PIDCConfig(triplet_block_k = n,           # k >= n-1
-                          neighbor_mode = :union)
+                          neighbor_mode = :union,
+                          verbose = true)
 
     net_full = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg_full)
     net_big  = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg_big)
@@ -239,9 +240,9 @@ end
 #     cfg_union_dist = PIDCConfig(triplet_block_k = 20, neighbor_mode = :union,
 #                                 triplet_backend = :distributed)
 #     cfg_target_thr = PIDCConfig(triplet_block_k = 20, neighbor_mode = :target,
-#                                 triplet_backend = :threads)
+#                                 triplet_backend = :threads, verbose = true)
 #     cfg_target_dist = PIDCConfig(triplet_block_k = 20, neighbor_mode = :target,
-#                                 triplet_backend = :distributed)
+#                                 triplet_backend = :distributed, verbose = true)
 
 #     t_full = @timed begin
 #         _mi, _clr, _puc, pidc_full = run_all_networks(large_file; config = cfg_full)

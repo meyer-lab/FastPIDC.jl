@@ -94,6 +94,7 @@ MI dump:
                           Default: 1.0
 
 Other:
+  --verbose            Print detailed progress information
   --help, -h              Show this help and exit.
 
 Example:
@@ -131,6 +132,8 @@ function main()
     estimator    = get(args, "estimator", "maximum_likelihood")
     n_bins       = parse(Int, get(args, "n_bins", "10"))
     base         = parse(Int, get(args, "base", "2"))
+    verbose_flag = parse_bool(get(args, "verbose", "false"))
+
 
     # ----------------- New scalability / pruning knobs ----------------
 
@@ -147,7 +150,6 @@ function main()
     triplet_block_k = parse(Int, get(args, "triplet-block-k", "0"))
     neighbor_mode   = Symbol(get(args, "neighbor-mode", "union"))      # :union or :target
     triplet_backend = Symbol(get(args, "triplet-backend", "threads"))  # :threads or :distributed
-    topk_edges      = parse(Int, get(args, "topk-edges", "0"))
 
     dump_mi_path     = haskey(args, "dump-mi-path") ? args["dump-mi-path"] : nothing
     dump_mi_fraction = parse(Float64, get(args, "dump-mi-fraction", "1.0"))
@@ -159,11 +161,11 @@ function main()
         triplet_block_k   = triplet_block_k,
         neighbor_mode     = neighbor_mode,
         triplet_backend   = triplet_backend,
-        topk_edges        = topk_edges,
         discretizer       = discretizer,
         estimator         = estimator,
         dump_mi_path      = dump_mi_path,
         dump_mi_fraction  = dump_mi_fraction,
+        verbose           = verbose_flag,
     )
 
     println(">>> FastPIDC run configuration")
@@ -178,7 +180,6 @@ function main()
     println("  triplet_block_k  = $(cfg.triplet_block_k)")
     println("  neighbor_mode    = $(cfg.neighbor_mode)")
     println("  triplet_backend  = $(cfg.triplet_backend)")
-    println("  topk_edges       = $(cfg.topk_edges)")
     println("  dump_mi_path     = $(cfg.dump_mi_path === nothing ? "none" : cfg.dump_mi_path)")
     println("  dump_mi_fraction = $(cfg.dump_mi_fraction)")
     println()

@@ -103,6 +103,10 @@ function compute_puc_pruned_dist(nodes::Vector{Node};
     if mode == :union
         # ---------------------- Option A: edge-centric ----------------
         @sync @distributed for x in 1:n
+            if config.verbose && x % 500 == 0
+                println("[FastPIDC] Distributed PUC progress: x = $x / $n")
+
+            end
             for z in x+1:n
                 # K(x,z) = neighbors[x] u neighbors[z] (deduplicated)
                 cands = Vector{Int}()
@@ -150,6 +154,9 @@ function compute_puc_pruned_dist(nodes::Vector{Node};
     elseif mode == :target
         # ---------------------- Option B: target-centric --------------
         @sync @distributed for x in 1:n
+            if config.verbose && x % 500 == 0
+                println("[FastPIDC] Distributed PUC progress: x = $x / $n")
+            end
             for z in x+1:n
                 # target = z, sources = (x, y), y in neighbors[z]
                 for y in neighbors[z]
