@@ -38,6 +38,7 @@ echo "Memory monitor PID = $MEM_PID" | tee -a "$LOG"
         --triplet-block-k 30 \
         --neighbor-mode "target" \
         --triplet-backend "threads" \
+        --context-mode "pruned" \
         --verbose true
 ) 2>&1 | tee -a "$LOG"
 # (

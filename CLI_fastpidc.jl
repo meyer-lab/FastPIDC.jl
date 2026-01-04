@@ -86,6 +86,9 @@ Scalability / pruning:
    INT   k for PUC triplet pruning (0 = full PUC). Default: 0
   --neighbor-mode STR     'union' (default) or 'target' for pruning neighborhood.
   --triplet-backend STR   'threads' (default) or 'distributed' for PUC backend.
+  --context-mode STR      Context weighting mode: 'legacy_dense' (default) or 'pruned'.
+                            Note: 'pruned' requires triplet-block-k > 0.
+
 
 MI dump:
   --dump-mi-path PATH     If set, dump MI scores here (TSV).
@@ -149,6 +152,17 @@ function main()
     triplet_block_k = parse(Int, get(args, "triplet-block-k", "0"))
     neighbor_mode   = Symbol(get(args, "neighbor-mode", "union"))      # :union or :target
     triplet_backend = Symbol(get(args, "triplet-backend", "threads"))  # :threads or :distributed
+    context_mode = Symbol(get(args, "context-mode", "legacy_dense"))  # :legacy_dense or :pruned
+
+    if !(context_mode in (:legacy_dense, :pruned))
+        error("Unsupported --context-mode=$(context_mode). Use 'legacy_dense' or 'pruned'.")
+    end
+
+    # Guardrail: pruned context only makes sense with a pruned candidate edge set
+    if context_mode == :pruned && triplet_block_k <= 0
+        error("--context-mode pruned requires --triplet-block-k > 0 (since candidate pairs come from MI-kNN pruning).")
+    end
+
 
     dump_mi_path     = haskey(args, "dump-mi-path") ? args["dump-mi-path"] : nothing
     dump_mi_fraction = parse(Float64, get(args, "dump-mi-fraction", "1.0"))
@@ -164,6 +178,7 @@ function main()
         estimator         = estimator,
         dump_mi_path      = dump_mi_path,
         dump_mi_fraction  = dump_mi_fraction,
+        context_mode      = context_mode,
         verbose           = verbose_flag,
     )
 
@@ -181,6 +196,7 @@ function main()
     println("  triplet_backend  = $(cfg.triplet_backend)")
     println("  dump_mi_path     = $(cfg.dump_mi_path === nothing ? "none" : cfg.dump_mi_path)")
     println("  dump_mi_fraction = $(cfg.dump_mi_fraction)")
+    println("  context_mode     = $(cfg.context_mode)")
     println("  verbose = $(cfg.verbose)")
     println()
 
