@@ -194,7 +194,9 @@ function compute_puc_pruned_dist(nodes::Vector{Node};
     else
         error("Unknown neighbor_mode = $(mode); expected :union or :target")
     end
-
+    if config.verbose
+        println("[FastPIDC] Finished PUC computation.")
+    end
     # Convert SharedArray → regular Matrix for downstream code
     return mi_scores, Array(puc_scores)
 end

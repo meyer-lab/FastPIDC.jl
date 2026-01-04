@@ -293,32 +293,70 @@ function InferredNetwork(
             if config.verbose
                 println("[FastPIDC] Context weighting.")
             end
-            weights = get_weights(inference, scores, number_of_nodes, nodes)
-        else
-            weights = scores
-        end
 
-        # Build edges: pruned vs full
-        edges =
-            if config.triplet_block_k > 0
-                # MI-based k-NN pruning
-                build_edges_with_mi_pruning(nodes, weights, mi_scores; config = config)
-            else
-                # Legacy behavior: fully connected (one edge per unordered pair)
-                e = Edge[]
-                sizehint!(e, binomial(number_of_nodes, 2))
-                for i in 1:number_of_nodes
-                    node1 = nodes[i]
-                    for j in i+1:number_of_nodes
-                        node2 = nodes[j]
-                        push!(e, Edge([node1, node2], weights[i, j]))
-                    end
+            if config.context_mode == :pruned
+                if config.triplet_block_k <= 0
+                    error(
+                        "context_mode=:pruned requires triplet_block_k > 0. " *
+                        "Set context_mode=:legacy_dense for full PIDC."
+                    )
                 end
-                sort!(e; by = get_weight, rev = true)
-                e
             end
 
-        return InferredNetwork(nodes, edges)
+            if config.context_mode == :legacy_dense
+                # Old behavior: allocate dense weights and compute all i<j
+                weights = get_weights(inference, scores, number_of_nodes, nodes)
+
+                # Build edges: pruned vs full
+                edges =
+                    if config.triplet_block_k > 0
+                        build_edges_with_mi_pruning(nodes, weights, mi_scores; config = config)
+                    else
+                        e = Edge[]
+                        sizehint!(e, binomial(number_of_nodes, 2))
+                        for i in 1:number_of_nodes
+                            for j in i+1:number_of_nodes
+                                push!(e, Edge([nodes[i], nodes[j]], weights[i, j]))
+                            end
+                        end
+                        sort!(e; by = get_weight, rev = true)
+                        e
+                    end
+
+                return InferredNetwork(nodes, edges)
+
+            elseif config.context_mode == :pruned
+                # Only compute context weights on candidate pairs
+                k = config.triplet_block_k
+                w, ei, ej = pidc_context_weights_pruned(scores, mi_scores, k)
+                edges = build_edges_from_pairs(nodes, ei, ej, w)
+                return InferredNetwork(nodes, edges)
+
+            else
+                error("Unknown context_mode = $(config.context_mode). Expected :legacy_dense or :pruned")
+            end
+
+        else
+            # ---- No context (PUC): weights = scores ----
+            weights = scores
+
+            edges =
+                if config.triplet_block_k > 0
+                    build_edges_with_mi_pruning(nodes, weights, mi_scores; config = config)
+                else
+                    e = Edge[]
+                    sizehint!(e, binomial(number_of_nodes, 2))
+                    for i in 1:number_of_nodes
+                        for j in i+1:number_of_nodes
+                            push!(e, Edge([nodes[i], nodes[j]], weights[i, j]))
+                        end
+                    end
+                    sort!(e; by = get_weight, rev = true)
+                    e
+                end
+
+            return InferredNetwork(nodes, edges)
+        end
 
     else
         # ===== MI / CLR branch (no PUC) =====
@@ -335,11 +373,9 @@ function InferredNetwork(
         edges = Array{Edge}(undef, binomial(number_of_nodes, 2))
         index = 0
         for i in 1:number_of_nodes
-            node1 = nodes[i]
             for j in i+1:number_of_nodes
                 index += 1
-                node2 = nodes[j]
-                edges[index] = Edge([node1, node2], weights[i, j])
+                edges[index] = Edge([nodes[i], nodes[j]], weights[i, j])
             end
         end
         sort!(edges; by = get_weight, rev = true)

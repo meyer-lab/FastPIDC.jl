@@ -102,6 +102,37 @@ end
     end
 end
 
+@testset "Pruned context matches legacy when k >= n" begin
+    data_file = joinpath(DATA_DIR, "toy_small_200.txt")
+    nodes = get_nodes(data_file)
+    n = length(nodes)
+
+    cfg_legacy = PIDCConfig(triplet_block_k = n, neighbor_mode=:union, context_mode=:legacy_dense)
+    cfg_pruned = PIDCConfig(triplet_block_k = n, neighbor_mode=:union, context_mode=:pruned)
+
+    net_legacy = InferredNetwork(PIDCNetworkInference(), nodes; config=cfg_legacy)
+    net_pruned = InferredNetwork(PIDCNetworkInference(), nodes; config=cfg_pruned)
+
+    @test length(net_legacy.edges) == length(net_pruned.edges)
+
+    function edge_map(net)
+        d = Dict{Tuple{String,String},Float64}()
+        for e in net.edges
+            a,b = sort([e.nodes[1].label, e.nodes[2].label])
+            d[(a,b)] = e.weight
+        end
+        d
+    end
+
+    d1 = edge_map(net_legacy)
+    d2 = edge_map(net_pruned)
+
+    @test keys(d1) == keys(d2)
+    for k in keys(d1)
+        @test d1[k] ≈ d2[k] atol=1e-10
+    end
+end
+
 @testset "Pruned PUC timing (union mode, toy 1kx200)" begin
     data_file = joinpath(DATA_DIR, "toy_small_200.txt")
     cfg_full   = PIDCConfig(triplet_block_k = 0)
@@ -208,12 +239,14 @@ end
         triplet_block_k = n,
         neighbor_mode   = :union,
         triplet_backend = :threads,
+        verbose = true,
     )
 
     cfg_dist = PIDCConfig(
         triplet_block_k = n,
         neighbor_mode   = :union,
         triplet_backend = :distributed,
+        verbose = true,
     )
 
     net_threads = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg_threads)

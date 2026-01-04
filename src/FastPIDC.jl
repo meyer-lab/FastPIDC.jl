@@ -27,7 +27,7 @@ export
 
 include("common.jl")
 export PIDCConfig # New addition
-
+include("context_pruned.jl")
 include("puc_full.jl")
 include("puc_pruned.jl")
 include("puc_pruned_dist.jl")

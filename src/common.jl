@@ -27,7 +27,7 @@ Base.@kwdef struct PIDCConfig
     dump_mi_path::Union{Nothing,String} = nothing  # If nothing => don't dump
     dump_mi_fraction::Float64 = 1.0                # 0–1; 1.0 = all pairs
     verbose::Bool = false
-
+    context_mode::Symbol = :legacy_dense  # :legacy_dense | :pruned
 end
 
 
