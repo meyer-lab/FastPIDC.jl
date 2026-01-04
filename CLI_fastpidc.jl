@@ -4,6 +4,8 @@ using Dates
 using Printf
 using DelimitedFiles
 using FastPIDC
+using Distributed
+
 
 # ---------------- Logging helpers ----------------
 macro say(msg)
@@ -202,7 +204,9 @@ function main()
 
     # ----------------- Run PIDC ----------------
     @say "Reading data from $infile ..."
-    @say "Workers: $(nprocs())"
+    n_workers = isdefined(Main, :Distributed) ? Distributed.nprocs() : 1
+    @say "Workers: $n_workers"
+
     t_start = time()
 
     net = infer_network(
