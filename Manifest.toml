@@ -2,7 +2,7 @@
 
 julia_version = "1.12.2"
 manifest_format = "2.0"
-project_hash = "f242379323e56ce883b3d243b90fc53c14e7b6b9"
+project_hash = "64132195f083bc1755d2079fe496908c76b8d887"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -87,7 +87,7 @@ uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 version = "1.7.0"
 
 [[deps.FastPIDC]]
-deps = ["DelimitedFiles", "Distributed", "Distributions", "InformationMeasures", "Pkg", "SharedArrays"]
+deps = ["DelimitedFiles", "Distributed", "Distributions", "InformationMeasures", "Pkg", "Printf", "SharedArrays"]
 path = "."
 uuid = "2e136e29-5425-4b9c-aa6d-e9e617c08fea"
 version = "0.1.1"

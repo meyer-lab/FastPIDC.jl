@@ -14,7 +14,7 @@ using DelimitedFiles
 
 include("baseline_helpers.jl")
 include("baseline_smoke_tests.jl")
-include("mi_dump_tests.jl")
+include("diagnostic_dump_tests.jl")
 
 
 # These tests use a dataset generated from the 10-node Yeast1 network from http://gnw.sourceforge.net/

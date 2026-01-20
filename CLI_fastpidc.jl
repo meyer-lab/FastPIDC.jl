@@ -97,6 +97,11 @@ MI dump:
   --dump-mi-fraction F    Fraction of MI pairs to dump in descending order [0-1].
                           Default: 1.0
 
+Pre-context PUC dump (diagnostics):
+  --dump-puc-path PATH    If set, dump pre-context PUC scores here (TSV).
+  --dump-puc-fraction F   Fraction of (candidate) edges to dump in descending order [0-1].
+                          Default: 1.0
+
 Other:
   --verbose            Print detailed progress information
   --help, -h              Show this help and exit.
@@ -169,6 +174,10 @@ function main()
     dump_mi_path     = haskey(args, "dump-mi-path") ? args["dump-mi-path"] : nothing
     dump_mi_fraction = parse(Float64, get(args, "dump-mi-fraction", "1.0"))
 
+    dump_puc_path     = haskey(args, "dump-puc-path") ? args["dump-puc-path"] : nothing
+    dump_puc_fraction = parse(Float64, get(args, "dump-puc-fraction", "1.0"))
+
+
     # ----------------- Build PIDCConfig (fully wired) ----------------
 
     cfg = PIDCConfig(
@@ -180,6 +189,8 @@ function main()
         estimator         = estimator,
         dump_mi_path      = dump_mi_path,
         dump_mi_fraction  = dump_mi_fraction,
+        dump_puc_path      = dump_puc_path,
+        dump_puc_fraction  = dump_puc_fraction,
         context_mode      = context_mode,
         verbose           = verbose_flag,
     )
@@ -198,6 +209,8 @@ function main()
     println("  triplet_backend  = $(cfg.triplet_backend)")
     println("  dump_mi_path     = $(cfg.dump_mi_path === nothing ? "none" : cfg.dump_mi_path)")
     println("  dump_mi_fraction = $(cfg.dump_mi_fraction)")
+    println("  dump_puc_path     = $(cfg.dump_puc_path === nothing ? "none" : cfg.dump_puc_path)")
+    println("  dump_puc_fraction = $(cfg.dump_puc_fraction)")
     println("  context_mode     = $(cfg.context_mode)")
     println("  verbose = $(cfg.verbose)")
     println()

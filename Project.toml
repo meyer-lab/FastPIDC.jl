@@ -13,6 +13,8 @@ Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 InformationMeasures = "96684042-fbdc-5399-9b8e-d34e539a126c"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 SharedArrays = "1a1011a3-84de-559e-8e89-a11a2f7dc383"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+
 
 [extras]
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"

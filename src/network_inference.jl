@@ -288,6 +288,14 @@ function InferredNetwork(
             dump_mi_scores(mi_scores, nodes, config)
         end
 
+        # Optional pre-context PUC dump
+        if config.dump_puc_path !== nothing
+            if config.verbose
+                println("[FastPIDC] Writing pre-context PUC scores.")
+            end
+            dump_puc_scores(scores, nodes, config; mi_scores = mi_scores)
+        end
+
         # Apply context if necessary (PIDC = true, PUC = false)
         if apply_context(inference)
             if config.verbose
