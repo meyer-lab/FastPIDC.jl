@@ -104,8 +104,6 @@ function build_incident_lists(ei::Vector{Int}, ej::Vector{Int}, n::Int)
     return inc
 end
 
-
-# ---------- CLR context on pruned candidate edges ----------
 # ---------- CLR context on pruned candidate edges ----------
 function clr_context_weights_pruned(scores::AbstractMatrix{Float64},
                                     mi_scores::AbstractMatrix{Float64},

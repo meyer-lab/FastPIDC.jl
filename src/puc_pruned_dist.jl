@@ -11,7 +11,7 @@ function compute_puc_pruned_dist(nodes::Vector{Node};
     n = length(nodes)
     k = min(config.triplet_block_k, max(n - 1, 0))
 
-    # Fallback: disabled pruning → full PUC
+    # Fallback: disabled pruning -> full PUC
     if k == 0
         return compute_puc_full(nodes; estimator = estimator, base = base, config = config)
     end
@@ -98,105 +98,51 @@ function compute_puc_pruned_dist(nodes::Vector{Node};
         scores[z, x] += puc_score
     end
 
-    mode = getfield(config, :neighbor_mode)
-
-    if mode == :union
-        # ---------------------- Option A: edge-centric ----------------
-        @sync @distributed for x in 1:n
-            if config.verbose && x % 500 == 0
-                println("[FastPIDC] Distributed PUC progress: x = $x / $n")
-
-            end
-            for z in x+1:n
-                # K(x,z) = neighbors[x] u neighbors[z] (deduplicated)
-                cands = Vector{Int}()
-                sizehint!(cands, length(neighbors[x]) + length(neighbors[z]))
-                append!(cands, neighbors[x])
-                append!(cands, neighbors[z])
-                sort!(cands)
-
-                last = 0
-                for y in cands
-                    # Skip duplicates and self/endpoint genes
-                    if y == last || y == x || y == z
-                        last = y
-                        continue
-                    end
-                    last = y
-
-                    # target = z, sources = (x, y)
-                    np_xz = node_pairs[x, z]
-                    np_yz = node_pairs[y, z]
-
-                    Rz = apply_redundancy_formula(
-                        nodes[z].probabilities,
-                        np_xz.si,
-                        np_yz.si,
-                        base
-                    )
-                    increment_puc_scores!(x, z, np_xz.mi, Rz, puc_scores)
-
-                    # target = x, sources = (y, z)
-                    np_yx = node_pairs[y, x]
-                    np_zx = node_pairs[z, x]
-
-                    Rx = apply_redundancy_formula(
-                        nodes[x].probabilities,
-                        np_yx.si,
-                        np_zx.si,
-                        base
-                    )
-                    increment_puc_scores!(x, z, np_zx.mi, Rx, puc_scores)
-                end
-            end
+    # ---------------------- target-centric --------------
+    @sync @distributed for x in 1:n
+        if config.verbose && x % 500 == 0
+            println("[FastPIDC] Distributed PUC progress: x = $x / $n")
         end
 
-    elseif mode == :target
-        # ---------------------- Option B: target-centric --------------
-        @sync @distributed for x in 1:n
-            if config.verbose && x % 500 == 0
-                println("[FastPIDC] Distributed PUC progress: x = $x / $n")
+        for z in x+1:n
+            # target = z, sources = (x, y), y in neighbors[z]
+            for y in neighbors[z]
+                (y == x || y == z) && continue
+
+                np_xz = node_pairs[x, z]
+                np_yz = node_pairs[y, z]
+
+                Rz = apply_redundancy_formula(
+                    nodes[z].probabilities,
+                    np_xz.si,
+                    np_yz.si,
+                    base,
+                )
+                increment_puc_scores!(x, z, np_xz.mi, Rz, puc_scores)
             end
-            for z in x+1:n
-                # target = z, sources = (x, y), y in neighbors[z]
-                for y in neighbors[z]
-                    (y == x || y == z) && continue
 
-                    np_xz = node_pairs[x, z]
-                    np_yz = node_pairs[y, z]
+            # target = x, sources = (y, z), y in neighbors[x]
+            for y in neighbors[x]
+                (y == x || y == z) && continue
 
-                    Rz = apply_redundancy_formula(
-                        nodes[z].probabilities,
-                        np_xz.si,
-                        np_yz.si,
-                        base
-                    )
-                    increment_puc_scores!(x, z, np_xz.mi, Rz, puc_scores)
-                end
+                np_yx = node_pairs[y, x]
+                np_zx = node_pairs[z, x]
 
-                # target = x, sources = (y, z), y in neighbors[x]
-                for y in neighbors[x]
-                    (y == x || y == z) && continue
-
-                    np_yx = node_pairs[y, x]
-                    np_zx = node_pairs[z, x]
-
-                    Rx = apply_redundancy_formula(
-                        nodes[x].probabilities,
-                        np_yx.si,
-                        np_zx.si,
-                        base
-                    )
-                    increment_puc_scores!(x, z, np_zx.mi, Rx, puc_scores)
-                end
+                Rx = apply_redundancy_formula(
+                    nodes[x].probabilities,
+                    np_yx.si,
+                    np_zx.si,
+                    base,
+                )
+                increment_puc_scores!(x, z, np_zx.mi, Rx, puc_scores)
             end
         end
-    else
-        error("Unknown neighbor_mode = $(mode); expected :union or :target")
     end
+
     if config.verbose
         println("[FastPIDC] Finished PUC computation.")
     end
+
     # Convert SharedArray → regular Matrix for downstream code
     return mi_scores, Array(puc_scores)
 end

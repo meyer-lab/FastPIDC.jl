@@ -78,37 +78,14 @@ end
     @test net1.edges[1].weight == net2.edges[1].weight
 end
 
-@testset "Pruned PUC matches full when k >= n (union mode)" begin
-    data_file = joinpath(DATA_DIR, "toy_small_200.txt")
-    nodes = get_nodes(data_file)
-
-    n = length(nodes)
-
-    cfg_full = PIDCConfig(triplet_block_k = 0)           # full PUC
-    cfg_big  = PIDCConfig(triplet_block_k = n,           # k >= n-1
-                          neighbor_mode = :union,
-                          verbose = true)
-
-    net_full = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg_full)
-    net_big  = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg_big)
-
-    @test length(net_full.edges) == length(net_big.edges)
-
-    # Check a subset of edges across the ordering
-    for idx in (1, 5, 10, 50, length(net_full.edges))
-        @test net_full.edges[idx].weight ≈ net_big.edges[idx].weight atol = 1e-8
-        @test Set(n.label for n in net_full.edges[idx].nodes) ==
-              Set(n.label for n in net_big.edges[idx].nodes)
-    end
-end
-
 @testset "Pruned context matches legacy when k >= n" begin
+    # Essentially the exact same test as "Pruned PUC matches full when k >= n"
     data_file = joinpath(DATA_DIR, "toy_small_200.txt")
     nodes = get_nodes(data_file)
     n = length(nodes)
 
-    cfg_legacy = PIDCConfig(triplet_block_k = n, neighbor_mode=:union, context_mode=:legacy_dense)
-    cfg_pruned = PIDCConfig(triplet_block_k = n, neighbor_mode=:union, context_mode=:pruned)
+    cfg_legacy = PIDCConfig(triplet_block_k = n, context_mode=:legacy_dense)
+    cfg_pruned = PIDCConfig(triplet_block_k = n, context_mode=:pruned)
 
     net_legacy = InferredNetwork(PIDCNetworkInference(), nodes; config=cfg_legacy)
     net_pruned = InferredNetwork(PIDCNetworkInference(), nodes; config=cfg_pruned)
@@ -133,51 +110,13 @@ end
     end
 end
 
-@testset "Pruned PUC timing (union mode, toy 1kx200)" begin
-    data_file = joinpath(DATA_DIR, "toy_small_200.txt")
-    cfg_full   = PIDCConfig(triplet_block_k = 0)
-    cfg_pruned = PIDCConfig(triplet_block_k = 20, neighbor_mode = :union)
-
-    t_full = @timed begin
-        _mi, _clr, _puc, pidc_full = run_all_networks(data_file; config = cfg_full)
-        pidc_full
-    end
-
-    t_pruned = @timed begin
-        _mi, _clr, _puc, pidc_pruned = run_all_networks(data_file; config = cfg_pruned)
-        pidc_pruned
-    end
-
-    @info "PUC timing (toy)" full = t_full.time pruned = t_pruned.time
-    @info "PUC allocations (toy)" full = t_full.bytes pruned = t_pruned.bytes
-
-    # Edge counts ≈ TSV lengths
-    full_edges   = length(t_full.value.edges)
-    pruned_edges = length(t_pruned.value.edges)
-
-    @info "PIDC edge counts (union mode, toy)" full_edges = full_edges pruned_edges = pruned_edges
-
-    # Optional soft sanity check: pruning really prunes
-    @test pruned_edges < full_edges
-
-    open(TIMINGS_PATH, "a") do io
-        println(io, "toy_200_puc_full_union\t$(t_full.time)\t$(t_full.bytes)")
-        println(io, "toy_200_puc_pruned_union\t$(t_pruned.time)\t$(t_pruned.bytes)")
-        println(io, "toy_200_puc_pruned_union edges vs full\t$(pruned_edges)\t$(full_edges)")
-    end
-
-    # Soft assertion:
-    # @test t_pruned.time <= 1.2 * t_full.time
-end
-
-@testset "Pruned PUC (target mode) matches full when k >= n" begin
+@testset "Pruned PUC matches full when k >= n" begin
     data_file = joinpath(DATA_DIR, "toy_small_200.txt")
     nodes = get_nodes(data_file)
     n = length(nodes)
 
     cfg_full = PIDCConfig(triplet_block_k = 0)  # full PUC
-    cfg_tar  = PIDCConfig(triplet_block_k = n,
-                          neighbor_mode     = :target)
+    cfg_tar  = PIDCConfig(triplet_block_k = n)
 
     net_full = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg_full)
     net_tar  = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg_tar)
@@ -191,12 +130,11 @@ end
     end
 end
 
-
 @testset "Pruned PUC timing (target mode, toy 1kx200)" begin
     data_file = joinpath(DATA_DIR, "toy_small_200.txt")
 
     cfg_full = PIDCConfig(triplet_block_k = 0)
-    cfg_tar  = PIDCConfig(triplet_block_k = 20, neighbor_mode = :target)
+    cfg_tar  = PIDCConfig(triplet_block_k = 20)
 
     t_full = @timed begin
         _mi, _clr, _puc, pidc_full = run_all_networks(data_file; config = cfg_full)
@@ -237,14 +175,12 @@ end
 
     cfg_threads = PIDCConfig(
         triplet_block_k = n,
-        neighbor_mode   = :union,
         triplet_backend = :threads,
         verbose = true,
     )
 
     cfg_dist = PIDCConfig(
         triplet_block_k = n,
-        neighbor_mode   = :union,
         triplet_backend = :distributed,
         verbose = true,
     )
@@ -264,66 +200,44 @@ end
 
 # --------- LARGE TESTS --------
 
-# @testset "Large toy PUC timing" begin
-#     large_file = joinpath(DATA_DIR, "toy_large_1k.txt")
+@testset "Large toy PUC timing" begin
+    large_file = joinpath(DATA_DIR, "toy_large_1k.txt")
 
-#     cfg_full      = PIDCConfig(triplet_block_k = 0)
-#     cfg_union_thr = PIDCConfig(triplet_block_k = 20, neighbor_mode = :union,
-#                                triplet_backend = :threads)
-#     cfg_union_dist = PIDCConfig(triplet_block_k = 20, neighbor_mode = :union,
-#                                 triplet_backend = :distributed)
-#     cfg_target_thr = PIDCConfig(triplet_block_k = 20, neighbor_mode = :target,
-#                                 triplet_backend = :threads, verbose = true)
-#     cfg_target_dist = PIDCConfig(triplet_block_k = 20, neighbor_mode = :target,
-#                                 triplet_backend = :distributed, verbose = true)
+    cfg_full      = PIDCConfig(triplet_block_k = 0)
+    cfg_target_thr = PIDCConfig(triplet_block_k = 20, triplet_backend = :threads, verbose = true)
+    cfg_target_dist = PIDCConfig(triplet_block_k = 20, triplet_backend = :distributed, verbose = true)
 
-#     t_full = @timed begin
-#         _mi, _clr, _puc, pidc_full = run_all_networks(large_file; config = cfg_full)
-#         pidc_full
-#     end
+    t_full = @timed begin
+        _mi, _clr, _puc, pidc_full = run_all_networks(large_file; config = cfg_full)
+        pidc_full
+    end
 
-#     t_union_thr = @timed begin
-#         _mi, _clr, _puc, pidc_union_thr = run_all_networks(large_file; config = cfg_union_thr)
-#         pidc_union_thr
-#     end
-
-#     t_union_dist = @timed begin
-#         _mi, _clr, _puc, pidc_union_dist = run_all_networks(large_file; config = cfg_union_dist)
-#         pidc_union_dist
-#     end
-
-#     t_target_thr = @timed begin
-#         _mi, _clr, _puc, pidc_target_thr = run_all_networks(large_file; config = cfg_target_thr)
-#         pidc_target_thr
-#     end
+    t_target_thr = @timed begin
+        _mi, _clr, _puc, pidc_target_thr = run_all_networks(large_file; config = cfg_target_thr)
+        pidc_target_thr
+    end
     
-#     t_target_dist = @timed begin
-#         _mi, _clr, _puc, pidc_target_dist = run_all_networks(large_file; config = cfg_target_dist)
-#         pidc_target_dist
-#     end
+    t_target_dist = @timed begin
+        _mi, _clr, _puc, pidc_target_dist = run_all_networks(large_file; config = cfg_target_dist)
+        pidc_target_dist
+    end
 
-#     @info "Large toy PUC timings (s)" full = t_full.time union_thr = t_union_thr.time union_dist = t_union_dist.time target_thr = t_target_thr.time target_dist = t_target_dist.time
-#     @info "Large toy PUC allocations (bytes)" full = t_full.bytes union_thr = t_union_thr.bytes union_dist = t_union_dist.bytes target_thr = t_target_thr.bytes target_dist = t_target_dist.bytes
+    @info "Large toy PUC timings (s)" full = t_full.time target_thr = t_target_thr.time target_dist = t_target_dist.time
+    @info "Large toy PUC allocations (bytes)" full = t_full.bytes target_thr = t_target_thr.bytes target_dist = t_target_dist.bytes
 
-#       # Edge counts ≈ TSV lengths
-#       full_edges   = length(t_full.value.edges)
-#       union_pruned_edges = length(t_union_dist.value.edges)
-#       target_pruned_edges = length(t_target_dist.value.edges)
+      # Edge counts ≈ TSV lengths
+      full_edges   = length(t_full.value.edges)
+      target_pruned_edges = length(t_target_dist.value.edges)
   
-#       @info "PIDC edge counts (union mode, toy)" full_edges = full_edges pruned_edges = union_pruned_edges
-#       @info "PIDC edge counts (target mode, toy)" full_edges = full_edges pruned_edges = target_pruned_edges
+      @info "PIDC edge counts (target mode, toy)" full_edges = full_edges pruned_edges = target_pruned_edges
   
-#       # Optional soft sanity check: pruning really prunes
-#       @test union_pruned_edges < full_edges
-#       @test target_pruned_edges < full_edges
+      # Optional soft sanity check: pruning really prunes
+      @test target_pruned_edges < full_edges
 
-#     open(TIMINGS_PATH, "a") do io
-#         println(io, "toy_large_1k_puc_full\t$(t_full.time)\t$(t_full.bytes)")
-#         println(io, "toy_large_1k_puc_pruned_union_threads\t$(t_union_thr.time)\t$(t_union_thr.bytes)")
-#         println(io, "toy_large_1k_puc_pruned_union_distributed\t$(t_union_dist.time)\t$(t_union_dist.bytes)")
-#         println(io, "toy_large_1k_puc_pruned_target_threads\t$(t_target_thr.time)\t$(t_target_thr.bytes)")
-#         println(io, "toy_large_1k_puc_pruned_target_distributed\t$(t_target_dist.time)\t$(t_target_dist.bytes)")
-#         println(io, "toy_large_1k_puc_pruned_union_distributed edges vs full\t$(union_pruned_edges)\t$(full_edges)")
-#         println(io, "toy_large_1k_puc_pruned_target_distributed edges vs full\t$(target_pruned_edges)\t$(full_edges)")
-#     end
-# end
+    open(TIMINGS_PATH, "a") do io
+        println(io, "toy_large_1k_puc_full\t$(t_full.time)\t$(t_full.bytes)")
+        println(io, "toy_large_1k_puc_pruned_target_threads\t$(t_target_thr.time)\t$(t_target_thr.bytes)")
+        println(io, "toy_large_1k_puc_pruned_target_distributed\t$(t_target_dist.time)\t$(t_target_dist.bytes)")
+        println(io, "toy_large_1k_puc_pruned_target_distributed edges vs full\t$(target_pruned_edges)\t$(full_edges)")
+    end
+end

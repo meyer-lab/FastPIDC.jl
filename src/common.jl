@@ -19,8 +19,7 @@ end
 # --- PIDC configuration -------------------------------------------
 Base.@kwdef struct PIDCConfig
     n_threads::Int = Threads.nthreads()         # reserved for adjusting threading vs processing
-    triplet_block_k::Int = 0                    # 0 => full PUC (Stage 3A), >0 => pruned PUC
-    neighbor_mode::Symbol = :union              # :union (default) or :target
+    triplet_block_k::Int = 0                    # 0 => full PUC, >0 => pruned PUC
     triplet_backend::Symbol = :threads          # :threads (default) or :distributed
     discretizer::String = "bayesian_blocks"     # mirrors existing default
     estimator::String = "maximum_likelihood"    # mirrors existing default
