@@ -5,6 +5,8 @@ using Printf
 using DelimitedFiles
 using FastPIDC
 using Distributed
+using SparseArrays
+using MatrixMarket
 
 
 # ---------------- Logging helpers ----------------
@@ -83,6 +85,7 @@ Basic options (match original PIDC):
   --base INT              Log base for MI (2, e, 10). Default: 2
 
 Scalability / pruning:
+  --output-format STR     'tsv' (default) or Julia native sparse matrix 'mtx'
   --n-threads INT         Logical threads you intend to use (for logging only).
                           Actual threads come from JULIA_NUM_THREADS.
    INT   k for PUC triplet pruning (0 = full PUC). Default: 0
@@ -131,6 +134,11 @@ function main()
 
     infile === nothing  && error("Missing required argument --infile")
     outfile === nothing && error("Missing required argument --outfile")
+    
+    output_format = Symbol(lowercase(get(args, "output-format", "tsv")))
+    if !(output_format in (:tsv, :mtx))
+        error("Unsupported --output-format=$(output_format). Use 'tsv' or 'mtx'.")
+    end
 
     # ----------------- Legacy PIDC options ----------------
 
@@ -195,6 +203,7 @@ function main()
     println(">>> FastPIDC run configuration")
     println("  infile           = $infile")
     println("  outfile          = $outfile")
+    println("  output_format    = $output_format")
     println("  delim            = $delim_str")
     println("  discretizer      = $discretizer")
     println("  estimator        = $estimator")
@@ -227,7 +236,8 @@ function main()
         number_of_bins      = n_bins,
         base        = base,
         config      = cfg,
-        out_file_path = outfile
+        out_file_path = outfile,
+        output_format = output_format
     )
 
     @say "Wrote edges to $(outfile)"

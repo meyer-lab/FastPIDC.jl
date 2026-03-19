@@ -2,7 +2,7 @@
 
 julia_version = "1.12.2"
 manifest_format = "2.0"
-project_hash = "64132195f083bc1755d2079fe496908c76b8d887"
+project_hash = "3dc5082949a6c07a95d6bcf9ad60ffd840e6d8b2"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -21,6 +21,12 @@ version = "1.11.0"
 [[deps.Base64]]
 uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
 version = "1.11.0"
+
+[[deps.CodecZlib]]
+deps = ["TranscodingStreams", "Zlib_jll"]
+git-tree-sha1 = "962834c22b66e32aa10f7611c08c8ca4e20749a9"
+uuid = "944b1d66-785c-5afd-91f1-9de20f533193"
+version = "0.7.8"
 
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
@@ -87,7 +93,7 @@ uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 version = "1.7.0"
 
 [[deps.FastPIDC]]
-deps = ["DelimitedFiles", "Distributed", "Distributions", "InformationMeasures", "Pkg", "Printf", "SharedArrays"]
+deps = ["DelimitedFiles", "Distributed", "Distributions", "InformationMeasures", "MatrixMarket", "Pkg", "Printf", "SharedArrays", "SparseArrays"]
 path = "."
 uuid = "2e136e29-5425-4b9c-aa6d-e9e617c08fea"
 version = "0.1.1"
@@ -194,6 +200,12 @@ version = "1.11.0"
 deps = ["Base64", "JuliaSyntaxHighlighting", "StyledStrings"]
 uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
 version = "1.11.0"
+
+[[deps.MatrixMarket]]
+deps = ["CodecZlib", "LinearAlgebra", "SparseArrays"]
+git-tree-sha1 = "da6fde5ea219bbe414f9d6f878ea9ab5d3476e64"
+uuid = "4d4711f2-db25-561a-b6b3-d35e7d4047d3"
+version = "0.5.2"
 
 [[deps.Missings]]
 deps = ["DataAPI"]
@@ -404,6 +416,11 @@ version = "1.0.3"
 deps = ["ArgTools", "SHA"]
 uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 version = "1.10.0"
+
+[[deps.TranscodingStreams]]
+git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
+uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
+version = "0.11.3"
 
 [[deps.UUIDs]]
 deps = ["Random", "SHA"]

@@ -2,6 +2,8 @@ using Test, DelimitedFiles
 using .BaselineHelpers
 using FastPIDC
 using Distributed
+using MatrixMarket
+using SparseArrays
 
 # Paths
 const DATA_DIR = joinpath(dirname(@__FILE__), "data")
@@ -197,6 +199,66 @@ end
     end
 end
 
+@testset "Toy dataset writes TSV and MTX consistently" begin
+    function count_nonzero_entries_from_tsv(path::String)
+        mat = readdlm(path, '\t')
+        n_nonzero = 0
+    
+        for i in 1:size(mat, 1)
+            w = Float64(mat[i, 3])
+            w == 0.0 && continue
+            n_nonzero += 1
+        end
+    
+        return n_nonzero
+    end
+
+    # Swap this path if your actual toy 1k x 200 file has a different name
+    data_file = joinpath(DATA_DIR, "toy_small_200.txt")
+
+    cfg = PIDCConfig(
+        triplet_block_k = 0,
+        triplet_backend = :threads,
+        verbose = false,
+    )
+
+    nodes = get_nodes(data_file)
+    net = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg)
+
+    tsv_path   = joinpath(OUT_DIR, "toy_pidc_edges.tsv")
+    mtx_path   = joinpath(OUT_DIR, "toy_pidc_edges.mtx")
+    genes_path = joinpath(OUT_DIR, "toy_pidc_edges_genes.txt")
+
+    # Write both formats
+    write_network_file(tsv_path, net)
+    write_network_mtx(mtx_path, net)
+
+    # Smoke checks: files exist
+    @test isfile(tsv_path)
+    @test isfile(mtx_path)
+    @test isfile(genes_path)
+
+    # Read MTX back in Julia
+    A = MatrixMarket.mmread(mtx_path)
+
+    # Read gene list sidecar
+    genes = readlines(genes_path)
+
+    # Basic consistency checks
+    n = length(net.nodes)
+    @test size(A, 1) == n
+    @test size(A, 2) == n
+    @test length(genes) == n
+
+    # If internal net.edges stores each undirected edge once,
+    # the symmetric matrix should have 2*E nonzeros.
+    n_unique_pairs = count_nonzero_entries_from_tsv(tsv_path)
+    @test nnz(A) == n_unique_pairs
+
+    # Diagonal should be zero
+    # @test all(diag(Matrix(A)) .== 0.0)
+    @test all(A[i, i] == 0.0 for i in 1:size(A, 1))
+end
 
 # --------- LARGE TESTS --------
 

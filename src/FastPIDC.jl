@@ -6,6 +6,8 @@ using Distributed
 using Pkg
 using DelimitedFiles
 using SharedArrays
+using SparseArrays
+using MatrixMarket
 
 export
     # Common types
@@ -21,6 +23,7 @@ export
     # Functions for inferring networks
     get_nodes,
     write_network_file,
+    write_network_mtx,
     read_network_file,
     get_adjacency_matrix,
     infer_network

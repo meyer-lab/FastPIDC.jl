@@ -77,6 +77,74 @@ function write_network_file(file_path::String, inferred_network::InferredNetwork
 end
 
 """
+    write_network_mtx(file_path::String, inferred_network::InferredNetwork)
+
+Writes an inferred undirected weighted network as a sparse Matrix Market file
+plus a sidecar gene list file preserving row/column order.
+
+Outputs:
+* `file_path`            : sparse weighted adjacency matrix in Matrix Market format
+* `<stem>.genes.txt`     : one gene label per line, matching matrix row/column order
+
+The matrix is symmetric with zero diagonal.
+
+To load in python:
+    from scipy.io import mmread
+
+    A = mmread("network.mtx").tocsr()
+
+    with open("network.genes.txt") as f:
+        genes = [line.strip() for line in f]
+"""
+function write_network_mtx(file_path::String, inferred_network::InferredNetwork)
+
+    # Preserve node order exactly as stored in inferred_network.nodes
+    labels = [node.label for node in inferred_network.nodes]
+    n = length(labels)
+
+    labels_to_ids = Dict{String,Int}()
+    for (i, label) in enumerate(labels)
+        labels_to_ids[label] = i
+    end
+
+    # Build symmetric sparse adjacency
+    m = length(inferred_network.edges)
+    nnz_sym = 2 * m
+
+    rows = Vector{Int}(undef, nnz_sym)
+    cols = Vector{Int}(undef, nnz_sym)
+    vals = Vector{Float64}(undef, nnz_sym)
+
+    k = 1
+    for edge in inferred_network.edges
+        i = labels_to_ids[edge.nodes[1].label]
+        j = labels_to_ids[edge.nodes[2].label]
+        w = Float64(edge.weight)
+
+        # store both directions for symmetric adjacency
+        rows[k] = i; cols[k] = j; vals[k] = w; k += 1
+        rows[k] = j; cols[k] = i; vals[k] = w; k += 1
+    end
+
+    A = sparse(rows, cols, vals, n, n)
+
+    # Write Matrix Market file
+    mmwrite(file_path, A)
+
+    # Write matching gene list sidecar
+    genes_path = replace(file_path, r"\.mtx$" => "_genes.txt")
+    if genes_path == file_path
+        genes_path = file_path * "_genes.txt"
+    end
+
+    open(genes_path, "w") do io
+        for g in labels
+            println(io, g)
+        end
+    end
+end
+
+"""
     read_network_file(file_path::AbstractString)
 
 Reads a network file and creates an InferredNetwork type. Assumes that the input
@@ -178,7 +246,7 @@ The "maximum_likelihood" estimator is recommended for PUC and PIDC.
 """
 function infer_network(data_file_path::String, inference::AbstractNetworkInference; delim::Union{Char,Bool} = false,
     discretizer = "bayesian_blocks", estimator = "maximum_likelihood", number_of_bins = 10, base = 2,
-    out_file_path = "", config::PIDCConfig = PIDCConfig())
+    out_file_path = "", output_format::Symbol = :tsv, config::PIDCConfig = PIDCConfig())
 
     println("Getting nodes...")
     nodes = get_nodes(
@@ -194,7 +262,14 @@ function infer_network(data_file_path::String, inference::AbstractNetworkInferen
 
     if length(out_file_path) > 1
         println("Writing network to file...")
-        write_network_file(out_file_path, inferred_network)
+
+        if output_format == :tsv
+            write_network_file(out_file_path, inferred_network)
+        elseif output_format == :mtx
+            write_network_mtx(out_file_path, inferred_network)
+        else
+            error("Unsupported output_format=$(output_format). Use :tsv or :mtx.")
+        end
     end
 
     return inferred_network
