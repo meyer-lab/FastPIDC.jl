@@ -5,6 +5,9 @@
 # Only change is outputting pairwise MI
 using SharedArrays
 
+# Placeholder for Metal extension
+function compute_puc_full_metal end
+
 function compute_puc_full(nodes::Vector{Node};
     estimator::String = "maximum_likelihood",
     base::Int = 2,
@@ -94,17 +97,26 @@ function compute_puc_full(nodes::Vector{Node};
 
     # --- Allocate caches -------------------------------------------------------
 
-    node_pairs = Array{NodePair}(undef, number_of_nodes, number_of_nodes)
     puc_scores = SharedArray{Float64}(number_of_nodes, number_of_nodes)
     fill!(puc_scores, 0.0)
 
+    # --- triplet enumeration -----------------------------------------
 
-    # --- pairwise MI + SI cache --------------------------------------
+    if config.triplet_backend == :metal
+        if hasmethod(compute_puc_full_metal, (typeof(nodes), typeof(config), typeof(base)))
+            return compute_puc_full_metal(nodes, config, base)
+        else
+            error("Metal backend requested but Metal.jl is not loaded or Metal.functional() is false. Run `using Metal` to enable GPU acceleration.")
+        end
+    end
 
+    # --- pairwise MI + SI cache (CPU Path) ---------------------------
+
+    node_pairs = Array{NodePair}(undef, number_of_nodes, number_of_nodes)
     fill_node_pairs!(node_pairs)
 
     # --- Build full MI matrix from NodePair cache --------------------
-    
+
     mi_scores = nodepairs_to_mi(node_pairs)
 
     # --- full triplet enumeration (legacy behavior) ------------------
@@ -113,14 +125,14 @@ function compute_puc_full(nodes::Vector{Node};
         for z in x+1:number_of_nodes
             for y in 1:number_of_nodes
                 (y == x || y == z) && continue
-    
+
                 # target = z
                 np_xz = node_pairs[x,z]
                 np_yz = node_pairs[y,z]
                 Rz = apply_redundancy_formula(nodes[z].probabilities,
                                               np_xz.si, np_yz.si, base)
                 increment_puc_scores!(x, z, np_xz.mi, Rz, puc_scores)
-    
+
                 # target = x
                 np_yx = node_pairs[y,x]
                 np_zx = node_pairs[z,x]
@@ -130,7 +142,7 @@ function compute_puc_full(nodes::Vector{Node};
             end
         end
     end
-    
+
 
     return mi_scores, Array(puc_scores)
 end

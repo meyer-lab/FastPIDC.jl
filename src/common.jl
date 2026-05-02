@@ -20,7 +20,7 @@ end
 Base.@kwdef struct PIDCConfig
     n_threads::Int = Threads.nthreads()         # reserved for adjusting threading vs processing
     triplet_block_k::Int = 0                    # 0 => full PUC, >0 => pruned PUC
-    triplet_backend::Symbol = :threads          # :threads (default) or :distributed
+    triplet_backend::Symbol = :threads          # :threads (default), :distributed, or :metal (Apple Silicon GPU)
     discretizer::String = "bayesian_blocks"     # mirrors existing default
     estimator::String = "maximum_likelihood"    # mirrors existing default
     dump_mi_path::Union{Nothing,String} = nothing  # If nothing => don't dump
