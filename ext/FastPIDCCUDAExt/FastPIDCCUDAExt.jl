@@ -1,7 +1,7 @@
-module FastPIDCMetalExt
+module FastPIDCCUDAExt
 
 using FastPIDC
-using Metal
+using CUDA
 using Atomix
 
 # --- Kernels ---
@@ -11,8 +11,8 @@ using Atomix
 """
 function joint_counts_kernel(data, target_id, counts, n, m, k_bins)
     # Grid: (num_samples, num_nodes)
-    s = thread_position_in_grid().x
-    x = thread_position_in_grid().y
+    s = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    x = (blockIdx().y - 1) * blockDim().y + threadIdx().y
     
     if s > m || x > n; return nothing; end
     
@@ -33,7 +33,7 @@ end
     mi_si_from_counts_kernel(counts, marginals, target_id, mi_out, si_out, n, m, k_bins)
 """
 function mi_si_from_counts_kernel(counts, marginals, target_id, mi_out, si_out, n, m, k_bins)
-    x = thread_position_in_grid().x
+    x = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     if x > n; return nothing; end
     
     inv_m = 1.0f0 / Float32(m)
@@ -68,7 +68,7 @@ end
     puc_accumulation_kernel(si_batch, mi_batch, puc_scores, z, n, k_bins, p_z)
 """
 function puc_accumulation_kernel(si_batch, mi_batch, puc_scores, z, n, k_bins, p_z)
-    x = thread_position_in_grid().x
+    x = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     if x > n || x == z; return nothing; end
     
     mi_xz = mi_batch[x]
@@ -96,7 +96,7 @@ end
 
 # --- Host Implementation ---
 
-function FastPIDC.compute_puc_full_metal(nodes, config, base)
+function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     num_nodes = length(nodes)
     num_samples = length(nodes[1].binned_values)
     k_bins = maximum(n -> n.number_of_bins, nodes)
@@ -110,18 +110,18 @@ function FastPIDC.compute_puc_full_metal(nodes, config, base)
         marginals_cpu[1:length(p), i] .= Float32.(p)
     end
     
-    data_gpu = MtlArray(data_cpu)
-    marginals_gpu = MtlArray(marginals_cpu)
+    data_gpu = CuArray(data_cpu)
+    marginals_gpu = CuArray(marginals_cpu)
     
     # Result matrices
-    puc_scores_gpu = MtlArray(zeros(Float32, num_nodes, num_nodes))
+    puc_scores_gpu = CuArray(zeros(Float32, num_nodes, num_nodes))
     mi_matrix_cpu = zeros(Float64, num_nodes, num_nodes)
     
     # Target-specific buffers
     # counts_batch: (k_bins, k_bins, num_nodes)
-    counts_batch_gpu = MtlArray(zeros(Int32, k_bins * k_bins * num_nodes))
-    si_batch_gpu = MtlArray(zeros(Float32, k_bins, num_nodes))
-    mi_batch_gpu = MtlArray(zeros(Float32, num_nodes))
+    counts_batch_gpu = CuArray(zeros(Int32, k_bins * k_bins * num_nodes))
+    si_batch_gpu = CuArray(zeros(Float32, k_bins, num_nodes))
+    mi_batch_gpu = CuArray(zeros(Float32, num_nodes))
     
     println("[FastPIDC] GPU Batched PUC: Processing $num_nodes targets...")
     
@@ -131,31 +131,30 @@ function FastPIDC.compute_puc_full_metal(nodes, config, base)
         end
         
         # Step 0: Clear counts
-        fill!(counts_batch_gpu, Int32(0))
+        CUDA.fill!(counts_batch_gpu, Int32(0))
         
         # Step 1: Joint Counts
-        gs_1 = (16, 16, 1)
-        gr_1 = (div(num_samples + 15, 16), div(num_nodes + 15, 16), 1)
-        @metal threads=gs_1 groups=gr_1 joint_counts_kernel(
+        gs_1 = (16, 16)
+        gr_1 = (div(num_samples + 15, 16), div(num_nodes + 15, 16))
+        @cuda threads=gs_1 blocks=gr_1 joint_counts_kernel(
             data_gpu, Int32(z), counts_batch_gpu,
             Int32(num_nodes), Int32(num_samples), Int32(k_bins)
         )
         
         # Step 2: MI and SI
-        gs_2 = (256, 1, 1)
-        gr_2 = (div(num_nodes + 255, 256), 1, 1)
-        @metal threads=gs_2 groups=gr_2 mi_si_from_counts_kernel(
+        gs_2 = (256,)
+        gr_2 = (div(num_nodes + 255, 256),)
+        @cuda threads=gs_2 blocks=gr_2 mi_si_from_counts_kernel(
             counts_batch_gpu, marginals_gpu, Int32(z), mi_batch_gpu, si_batch_gpu,
             Int32(num_nodes), Int32(num_samples), Int32(k_bins)
         )
         
         # Capture MI row for final output
-        # (Could be optimized by moving the whole matrix at once, but this is fine)
         mi_matrix_cpu[:, z] .= Float64.(Array(mi_batch_gpu))
         
         # Step 3: PUC Accumulation
         p_z_gpu = view(marginals_gpu, :, z)
-        @metal threads=gs_2 groups=gr_2 puc_accumulation_kernel(
+        @cuda threads=gs_2 blocks=gr_2 puc_accumulation_kernel(
             si_batch_gpu, mi_batch_gpu, puc_scores_gpu, Int32(z),
             Int32(num_nodes), Int32(k_bins), p_z_gpu
         )
@@ -165,8 +164,6 @@ function FastPIDC.compute_puc_full_metal(nodes, config, base)
     puc_scores_cpu = Array(puc_scores_gpu)
     
     # Symmetrize PUC scores
-    # Each cell (x, z) currently only contains contributions where z was the target.
-    # We need to add the cases where x was the target.
     for i in 1:num_nodes
         for j in i+1:num_nodes
             val = puc_scores_cpu[i, j] + puc_scores_cpu[j, i]

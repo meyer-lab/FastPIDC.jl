@@ -5,8 +5,8 @@
 # Only change is outputting pairwise MI
 using SharedArrays
 
-# Placeholder for Metal extension
-function compute_puc_full_metal end
+# Placeholder for CUDA extension
+function compute_puc_full_cuda end
 
 function compute_puc_full(nodes::Vector{Node};
     estimator::String = "maximum_likelihood",
@@ -102,11 +102,11 @@ function compute_puc_full(nodes::Vector{Node};
 
     # --- triplet enumeration -----------------------------------------
 
-    if config.triplet_backend == :metal
-        if hasmethod(compute_puc_full_metal, (typeof(nodes), typeof(config), typeof(base)))
-            return compute_puc_full_metal(nodes, config, base)
+    if config.triplet_backend == :cuda
+        if hasmethod(compute_puc_full_cuda, (typeof(nodes), typeof(config), typeof(base)))
+            return compute_puc_full_cuda(nodes, config, base)
         else
-            error("Metal backend requested but Metal.jl is not loaded or Metal.functional() is false. Run `using Metal` to enable GPU acceleration.")
+            error("CUDA backend requested but CUDA.jl is not loaded or CUDA.functional() is false. Run `using CUDA` to enable GPU acceleration.")
         end
     end
 

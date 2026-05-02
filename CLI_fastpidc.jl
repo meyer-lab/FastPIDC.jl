@@ -89,7 +89,7 @@ Scalability / pruning:
   --n-threads INT         Logical threads you intend to use (for logging only).
                           Actual threads come from JULIA_NUM_THREADS.
    INT   k for PUC triplet pruning (0 = full PUC). Default: 0
-  --triplet-backend STR   'threads' (default) or 'distributed' for PUC backend.
+  --triplet-backend STR   'threads' (default), 'distributed', or 'cuda' (NVIDIA GPU).
   --context-mode STR      Context weighting mode: 'legacy_dense' (default) or 'pruned'.
                             Note: 'pruned' requires triplet-block-k > 0.
 
