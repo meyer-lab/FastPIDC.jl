@@ -54,6 +54,11 @@ function compute_puc_full(nodes::Vector{Node};
             mi::Float64,
             redundancy::Float64,
             puc_scores::AbstractMatrix{Float64})
+        # Prevents division-by-tiny-number explosion when MI is effectively zero.
+        if mi <= 1e-12
+            return
+        end
+        
         puc_score = (mi - redundancy) / mi
         puc_score = isfinite(puc_score) && puc_score >= 0 ? puc_score : zero(puc_score)
         puc_scores[x,z] += puc_score

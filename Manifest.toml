@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "fbde1b28fb7a5aac084cbb76be4f2d2e07cb7724"
+project_hash = "7fe3feb5c7b545e347fcc2c77fe803114b84f680"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -204,7 +204,7 @@ uuid = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
 version = "0.1.10"
 
 [[deps.FastPIDC]]
-deps = ["Atomix", "CUDA", "DelimitedFiles", "Distributed", "Distributions", "InformationMeasures", "MatrixMarket", "Pkg", "Printf", "SharedArrays", "SparseArrays"]
+deps = ["Atomix", "CUDA", "DelimitedFiles", "Distributed", "Distributions", "InformationMeasures", "LinearAlgebra", "MatrixMarket", "Pkg", "Printf", "SharedArrays", "SparseArrays", "Statistics"]
 path = "."
 uuid = "2e136e29-5425-4b9c-aa6d-e9e617c08fea"
 version = "0.1.1"

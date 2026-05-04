@@ -21,9 +21,9 @@ function joint_counts_kernel(data, target_id, counts, n, m, k_bins)
     
     if u >= 1 && u <= k_bins && v >= 1 && v <= k_bins
         # Flat index for counts[u, v, x]
-        idx = UInt32((x-1)*k_bins*k_bins + (v-1)*k_bins + u)
+        idx = UInt64((x-1)*k_bins*k_bins + (v-1)*k_bins + u)
         # Atomic increment in global memory
-        Atomix.@atomic counts[idx] += Int32(1)
+        Atomix.@atomic counts[idx] += Int64(1)
     end
     
     return nothing
@@ -36,22 +36,23 @@ function mi_si_from_counts_kernel(counts, marginals, target_id, mi_out, si_out, 
     x = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     if x > n; return nothing; end
     
-    inv_m = 1.0f0 / Float32(m)
-    mi_val = 0.0f0
+    # Force 64-bit precision literals
+    inv_m = 1.0 / Float64(m)
+    mi_val = 0.0
     
     for v in 1:k_bins
         p_z_v = marginals[v, target_id]
-        if p_z_v <= 0.0f0; continue; end
+        if p_z_v <= 0.0; continue; end
         
-        si_v = 0.0f0
+        si_v = 0.0
         for u in 1:k_bins
             p_x_u = marginals[u, x]
-            if p_x_u <= 0.0f0; continue; end
+            if p_x_u <= 0.0; continue; end
             
             c_uv = counts[(x-1)*k_bins*k_bins + (v-1)*k_bins + u]
-            p_uv = Float32(c_uv) * inv_m
+            p_uv = Float64(c_uv) * inv_m
             
-            if p_uv > 0.0f0
+            if p_uv > 0.0
                 mi_val += p_uv * log2(p_uv / (p_x_u * p_z_v))
                 p_u_cond_v = p_uv / p_z_v
                 si_v += p_u_cond_v * log2(p_u_cond_v / p_x_u)
@@ -59,7 +60,7 @@ function mi_si_from_counts_kernel(counts, marginals, target_id, mi_out, si_out, 
         end
         si_out[v, x] = si_v
     end
-    
+
     mi_out[x] = mi_val
     return nothing
 end
@@ -72,20 +73,21 @@ function puc_accumulation_kernel(si_batch, mi_batch, puc_scores, z, n, k_bins, p
     if x > n || x == z; return nothing; end
     
     mi_xz = mi_batch[x]
-    if mi_xz <= 0.0f0; return nothing; end
+    # Threshold tiny MIs to prevent float-noise amplification
+    if mi_xz <= 1e-12; return nothing; end
     
-    local_puc = 0.0f0
+    local_puc = 0.0
     for y in 1:n
         if y == x || y == z; continue; end
         
-        redundancy = 0.0f0
+        redundancy = 0.0
         for k in 1:k_bins
             # Williams & Beer: min(SI(x;z_k), SI(y;z_k))
             redundancy += p_z[k] * min(si_batch[k, x], si_batch[k, y])
         end
         
         score = (mi_xz - redundancy) / mi_xz
-        if isfinite(score) && score > 0.0f0
+        if isfinite(score) && score > 0.0
             local_puc += score
         end
     end
@@ -102,26 +104,26 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     k_bins = maximum(n -> n.number_of_bins, nodes)
     
     # 1. Prepare data on GPU
-    data_cpu = zeros(Int32, num_samples, num_nodes)
-    marginals_cpu = zeros(Float32, k_bins, num_nodes)
+    data_cpu = zeros(Int64, num_samples, num_nodes)
+    marginals_cpu = zeros(Float64, k_bins, num_nodes)
     for i in 1:num_nodes
-        data_cpu[:, i] .= Int32.(nodes[i].binned_values)
+        data_cpu[:, i] .= Int64.(nodes[i].binned_values)
         p = nodes[i].probabilities
-        marginals_cpu[1:length(p), i] .= Float32.(p)
+        marginals_cpu[1:length(p), i] .= Float64.(p)
     end
     
     data_gpu = CuArray(data_cpu)
     marginals_gpu = CuArray(marginals_cpu)
     
     # Result matrices
-    puc_scores_gpu = CuArray(zeros(Float32, num_nodes, num_nodes))
+    puc_scores_gpu = CuArray(zeros(Float64, num_nodes, num_nodes))
     mi_matrix_cpu = zeros(Float64, num_nodes, num_nodes)
     
     # Target-specific buffers
     # counts_batch: (k_bins, k_bins, num_nodes)
-    counts_batch_gpu = CuArray(zeros(Int32, k_bins * k_bins * num_nodes))
-    si_batch_gpu = CuArray(zeros(Float32, k_bins, num_nodes))
-    mi_batch_gpu = CuArray(zeros(Float32, num_nodes))
+    counts_batch_gpu = CuArray(zeros(Int64, k_bins * k_bins * num_nodes))
+    si_batch_gpu = CuArray(zeros(Float64, k_bins, num_nodes))
+    mi_batch_gpu = CuArray(zeros(Float64, num_nodes))
     
     println("[FastPIDC] GPU Batched PUC: Processing $num_nodes targets...")
     
@@ -131,32 +133,34 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
         end
         
         # Step 0: Clear counts
-        CUDA.fill!(counts_batch_gpu, Int32(0))
+        CUDA.fill!(counts_batch_gpu, Int64(0))
         
         # Step 1: Joint Counts
         gs_1 = (16, 16)
         gr_1 = (div(num_samples + 15, 16), div(num_nodes + 15, 16))
         @cuda threads=gs_1 blocks=gr_1 joint_counts_kernel(
-            data_gpu, Int32(z), counts_batch_gpu,
-            Int32(num_nodes), Int32(num_samples), Int32(k_bins)
+            data_gpu, Int64(z), counts_batch_gpu,
+            Int64(num_nodes), Int64(num_samples), Int64(k_bins)
         )
         
         # Step 2: MI and SI
         gs_2 = (256,)
         gr_2 = (div(num_nodes + 255, 256),)
         @cuda threads=gs_2 blocks=gr_2 mi_si_from_counts_kernel(
-            counts_batch_gpu, marginals_gpu, Int32(z), mi_batch_gpu, si_batch_gpu,
-            Int32(num_nodes), Int32(num_samples), Int32(k_bins)
+            counts_batch_gpu, marginals_gpu, Int64(z), mi_batch_gpu, si_batch_gpu,
+            Int64(num_nodes), Int64(num_samples), Int64(k_bins)
         )
         
         # Capture MI row for final output
         mi_matrix_cpu[:, z] .= Float64.(Array(mi_batch_gpu))
+        # This overwrites zeros on the diagonal; set diag to zero
+        mi_matrix_cpu[z, z] = 0.0
         
         # Step 3: PUC Accumulation
         p_z_gpu = view(marginals_gpu, :, z)
         @cuda threads=gs_2 blocks=gr_2 puc_accumulation_kernel(
-            si_batch_gpu, mi_batch_gpu, puc_scores_gpu, Int32(z),
-            Int32(num_nodes), Int32(k_bins), p_z_gpu
+            si_batch_gpu, mi_batch_gpu, puc_scores_gpu, Int64(z),
+            Int64(num_nodes), Int64(k_bins), p_z_gpu
         )
     end
     
