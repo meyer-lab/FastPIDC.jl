@@ -1,8 +1,7 @@
 # src/puc_pruned.jl
 #
-# Pruned PUC: use MI-based k-neighborhoods instead of all triplets.
-# This is opt-in via PIDCConfig.triplet_block_k > 0.
-#
+# Optimized Pruned PUC using fused Information Measures and efficient SIMD loops.
+using SharedArrays
 
 function compute_puc_pruned(nodes::Vector{Node};
     estimator::String = "maximum_likelihood",
@@ -17,138 +16,131 @@ function compute_puc_pruned(nodes::Vector{Node};
         return compute_puc_full(nodes; estimator = estimator, base = base, config = config)
     end
 
+    max_bins = maximum(node -> node.number_of_bins, nodes)
+    S = length(nodes[1].binned_values)
+    inv_S = 1.0 / S
+    inv_log_base = 1.0 / log(base)
+
+    # --- Pre-calculate marginal logs -------------------------------------------
+    marginal_logs = [log.(node.probabilities) for node in nodes]
+
     # --- build NodePair cache (MI + specific information) ------------
+    mi_matrix = zeros(Float64, n, n)
+    si_tensor = zeros(Float64, n, max_bins, n)
 
-    node_pairs = Array{NodePair}(undef, n, n)
-
-    function get_mi_and_si(node1::Node, node2::Node)
-        probabilities, probabilities1, probabilities2 =
-        get_joint_probabilities(node1, node2, estimator)
-
-        mi = apply_mutual_information_formula(
-        probabilities, probabilities1, probabilities2, base)
-
-        si1 = apply_specific_information_formula(
-        probabilities, probabilities1, probabilities2, 1, base)
-
-        si2 = apply_specific_information_formula(
-        probabilities, probabilities2, probabilities1, 2, base)
-
-        return mi, si1, si2
-    end
-
-    # Turn NodePair cache into a dense MI matrix (symmetric).
-    function nodepairs_to_mi(node_pairs::Array{NodePair,2})
-        n = size(node_pairs, 1)
-        mi = zeros(Float64, n, n)
-        for i in 1:n
-            mi[i,i] = 0.0
-            for j in i+1:n
-                m = node_pairs[i,j].mi
-                mi[i,j] = m
-                mi[j,i] = m
-            end
-        end
-        return mi
-    end
-
-    for i in 1:n
+    Threads.@threads for i in 1:n
+        si2_acc = zeros(Float64, max_bins)
+        freqs = zeros(Int, max_bins, max_bins)
+        
         for j in i+1:n
-            mi, si1, si2 = get_mi_and_si(nodes[i], nodes[j])
-            node_pairs[i, j] = NodePair(mi, si1)  # source = i, target = j
-            node_pairs[j, i] = NodePair(mi, si2)  # source = j, target = i
+            node_i = nodes[i]
+            node_j = nodes[j]
+            nb_i = node_i.number_of_bins
+            nb_j = node_j.number_of_bins
+            
+            fill!(freqs, 0)
+            bids_i = node_i.binned_values
+            bids_j = node_j.binned_values
+            @inbounds for s in 1:S
+                freqs[bids_i[s], bids_j[s]] += 1
+            end
+            
+            mi = 0.0
+            fill!(si2_acc, 0.0)
+            for bj in 1:nb_j
+                pj = node_j.probabilities[bj]
+                sum_si1 = 0.0
+                for bi in 1:nb_i
+                    f = freqs[bi, bj]
+                    if f > 0
+                        p_ij = f * inv_S
+                        term = p_ij * (log(p_ij) - marginal_logs[i][bi] - marginal_logs[j][bj])
+                        mi += term
+                        sum_si1 += term
+                        si2_acc[bi] += term
+                    end
+                end
+                if pj > 0
+                    si_tensor[i, bj, j] = (sum_si1 / pj) * inv_log_base
+                end
+            end
+            
+            for bi in 1:nb_i
+                pi = node_i.probabilities[bi]
+                if pi > 0
+                    si_tensor[j, bi, i] = (si2_acc[bi] / pi) * inv_log_base
+                end
+            end
+            
+            mi_val = mi * inv_log_base
+            mi_matrix[i, j] = mi_val
+            mi_matrix[j, i] = mi_val
         end
     end
 
     # --- MI-based neighbor lists for each gene -----------------------
-
     neighbors = Vector{Vector{Int}}(undef, n)
-
     for t in 1:n
-        mivals = Vector{Tuple{Float64,Int}}()
-        sizehint!(mivals, n - 1)
-
-        for u in 1:n
-            u == t && continue
-            mi_tu = node_pairs[t, u].mi
-            push!(mivals, (mi_tu, u))
-        end
-
+        mivals = [(mi_matrix[t, u], u) for u in 1:n if u != t]
         sort!(mivals; by = x -> x[1], rev = true)
         k_eff = min(k, length(mivals))
         neighbors[t] = [mivals[i][2] for i in 1:k_eff]
     end
 
-    # --- Build full MI matrix from NodePair cache --------------------
-    
-    mi_scores = nodepairs_to_mi(node_pairs)
-
     # --- allocate PUC scores ----------------------------------------
-
     puc_scores = zeros(Float64, n, n)
 
-    # Same clamping behavior as legacy increment_puc_scores.
-    function increment_puc_scores!(x::Int, z::Int, mi::Float64, redundancy::Float64,
-            scores::AbstractMatrix{Float64})
-        puc_score = (mi - redundancy) / mi
-        puc_score = isfinite(puc_score) && puc_score >= 0 ? puc_score : zero(puc_score)
-        scores[x, z] += puc_score
-        scores[z, x] += puc_score
-    end
-
-    # ---------------------- target-centric --------------------
-    #
-    # For an edge (x,z):
-    #   - Redundancy around z uses ONLY neighbors[z] as candidate y.
-    #   - Redundancy around x uses ONLY neighbors[x] as candidate y.
-    #
-    # When k >= n-1, neighbors[t] contains all other genes, so this
-    # reproduces full PUC exactly (every triple {x,y,z} is seen once
-    # for target=z and once for target=x, as in compute_puc_full).
-
-        Threads.@threads for x in 1:n
-            if config.verbose && x % 500 == 0 && Threads.threadid() == 1
-                println("[FastPIDC] Threads PUC progress: x = $x / $n")
-            end
-    
-            for z in x+1:n
-                # --- target = z, sources = (x, y), y in neighbors[z] ----------
-                for y in neighbors[z]
-                    (y == x || y == z) && continue
-    
-                    np_xz = node_pairs[x, z]
-                    np_yz = node_pairs[y, z]
-    
-                    Rz = apply_redundancy_formula(
-                        nodes[z].probabilities,
-                        np_xz.si,
-                        np_yz.si,
-                        base,
-                    )
-                    increment_puc_scores!(x, z, np_xz.mi, Rz, puc_scores)
+    # --- multithreaded triplet loop with SIMD redundancy ------------
+    Threads.@threads for x in 1:n
+        if config.verbose && x % 500 == 0 && Threads.threadid() == 1
+            println("[FastPIDC] Threads PUC progress: x = $x / $n")
+        end
+        
+        for z in x+1:n
+            pz = nodes[z].probabilities
+            nz = length(pz)
+            mi_xz = mi_matrix[x, z]
+            inv_mi_xz = mi_xz > 0 ? 1.0 / mi_xz : 0.0
+            sum_puc = 0.0
+            
+            # target z
+            for y in neighbors[z]
+                y == x && continue
+                Rz = 0.0
+                @inbounds for b in 1:nz
+                    Rz += pz[b] * min(si_tensor[x, b, z], si_tensor[y, b, z])
                 end
-    
-                # --- target = x, sources = (y, z), y in neighbors[x] ----------
-                for y in neighbors[x]
-                    (y == x || y == z) && continue
-    
-                    np_yx = node_pairs[y, x]
-                    np_zx = node_pairs[z, x]
-    
-                    Rx = apply_redundancy_formula(
-                        nodes[x].probabilities,
-                        np_yx.si,
-                        np_zx.si,
-                        base,
-                    )
-                    increment_puc_scores!(x, z, np_zx.mi, Rx, puc_scores)
+                score = (mi_xz - Rz) * inv_mi_xz
+                if score > 0
+                    sum_puc += score
                 end
             end
+            
+            # target x
+            px = nodes[x].probabilities
+            nx = length(px)
+            mi_zx = mi_matrix[z, x]
+            inv_mi_zx = mi_zx > 0 ? 1.0 / mi_zx : 0.0
+            for y in neighbors[x]
+                y == z && continue
+                Rx = 0.0
+                @inbounds for b in 1:nx
+                    Rx += px[b] * min(si_tensor[z, b, x], si_tensor[y, b, x])
+                end
+                score = (mi_zx - Rx) * inv_mi_zx
+                if score > 0
+                    sum_puc += score
+                end
+            end
+            
+            puc_scores[x, z] = sum_puc
+            puc_scores[z, x] = sum_puc
         end
-    
-        if config.verbose
-            println("[FastPIDC] Finished PUC computation.")
-        end
-    
-        return mi_scores, puc_scores
     end
+
+    if config.verbose
+        println("[FastPIDC] Finished PUC computation.")
+    end
+
+    return mi_matrix, puc_scores
+end

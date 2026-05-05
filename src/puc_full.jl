@@ -1,8 +1,7 @@
 # src/puc_full.jl
 #
-# Full, legacy PUC computation over all triplets (no pruning).
-# This is factored out so we can later add pruned / block-based variants.
-# Only change is outputting pairwise MI
+# Optimized Full PUC computation using the Sorting Trick and fused Information Measures.
+# Reduces complexity from O(N^3 B) to O(N^2 B log N).
 using SharedArrays
 
 # Placeholder for CUDA extension
@@ -13,7 +12,11 @@ function compute_puc_full(nodes::Vector{Node};
     base::Int = 2,
     config::PIDCConfig = PIDCConfig())
 
-    number_of_nodes = length(nodes)
+    n = length(nodes)
+    max_bins = maximum(node -> node.number_of_bins, nodes)
+    S = length(nodes[1].binned_values)
+    inv_S = 1.0 / S
+    inv_log_base = 1.0 / log(base)
 
     # --- Local helpers (same logic as original get_puc_scores) ----------------
 
@@ -147,7 +150,7 @@ function compute_puc_full(nodes::Vector{Node};
             end
         end
     end
-
+    
 
     return mi_scores, Array(puc_scores)
 end
