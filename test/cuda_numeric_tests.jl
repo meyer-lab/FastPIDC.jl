@@ -8,7 +8,7 @@ using Statistics
 if CUDA.functional()
     @testset "CUDA Numeric Equivalence & Integrity" begin
         # Setup minimal dummy data
-        dataset = "data/toy_small_200.txt" # Use a small, fast dataset
+        dataset = "test/data/toy_small_200.txt" # Use a small, fast dataset
         nodes = get_nodes(dataset)
         
         config_cpu = PIDCConfig(triplet_backend=:threads, verbose=false)
