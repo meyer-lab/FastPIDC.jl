@@ -12,9 +12,12 @@ end
 using Test
 using DelimitedFiles
 
+include("cuda_smoke_tests.jl")
 include("baseline_helpers.jl")
-include("baseline_smoke_tests.jl")
+# include("baseline_smoke_tests.jl")
+include("cuda_numeric_tests.jl")
 include("diagnostic_dump_tests.jl")
+include("benchmark_puc.jl")
 
 
 # These tests use a dataset generated from the 10-node Yeast1 network from http://gnw.sourceforge.net/
