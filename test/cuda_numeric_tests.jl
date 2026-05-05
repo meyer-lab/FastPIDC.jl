@@ -3,12 +3,13 @@ using Test
 using LinearAlgebra
 using CUDA
 using Statistics
+const DATA_DIR = joinpath(dirname(@__FILE__), "data")
 
 # Only run if GPU is available
 if CUDA.functional()
     @testset "CUDA Numeric Equivalence & Integrity" begin
         # Setup minimal dummy data
-        dataset = "test/data/toy_small_200.txt" # Use a small, fast dataset
+        dataset = joinpath(DATA_DIR, "toy_small_200.txt") # Use a small, fast dataset
         nodes = get_nodes(dataset)
         
         config_cpu = PIDCConfig(triplet_backend=:threads, verbose=false)

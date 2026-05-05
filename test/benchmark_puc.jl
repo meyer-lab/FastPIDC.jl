@@ -16,11 +16,9 @@ if !CUDA.functional()
     exit(0)
 end
 
-dataset = "test/data/toy_large_1k.txt"
-if !isfile(dataset)
-    # Try alternate path if running from within test/
-    dataset = "data/toy_large_1k.txt"
-end
+# Paths
+const DATA_DIR = joinpath(dirname(@__FILE__), "data")
+dataset = joinpath(DATA_DIR, "toy_large_1k.txt") # Use a small, fast dataset
 
 println("Loading nodes from $dataset...")
 nodes = get_nodes(dataset)
