@@ -53,6 +53,7 @@ function Node(line::AbstractArray, discretizer, estimator, number_of_bins)
 
 end
 
+
 # Mutual information and specific information for a node pair
 function get_mi_and_si(node1::Node, node2::Node, estimator, base)
     probabilities, probabilities1, probabilities2 =
@@ -72,6 +73,14 @@ function get_mi_and_si(node1::Node, node2::Node, estimator, base)
                             2,
                             base)
     return mi, si1, si2
+end
+
+# Type for caching information between pairs of nodes:
+# - mi: mutual information
+# - si: specific information
+struct NodePair
+    mi::Float64
+    si::Array{Float64}
 end
 
 """

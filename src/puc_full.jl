@@ -12,7 +12,7 @@ function compute_puc_full(nodes::Vector{Node};
     base::Int = 2,
     config::PIDCConfig = PIDCConfig())
 
-    n = length(nodes)
+    number_of_nodes = length(nodes)
     max_bins = maximum(node -> node.number_of_bins, nodes)
     S = length(nodes[1].binned_values)
     inv_S = 1.0 / S
