@@ -11,7 +11,7 @@ using Test
         "G3" 1 1 2 2
     ]
     nodes = [FastPIDC.Node(data[i, :], "bayesian_blocks", "maximum_likelihood", 10) for i in 1:3]
-    config = PIDCConfig(triplet_backend=:cuda)
+    config = PIDCConfig(backend=:cuda)
     
     # Should throw ErrorException because CUDA.jl is not loaded in this test environment
     try

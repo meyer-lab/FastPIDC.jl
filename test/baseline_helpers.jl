@@ -4,7 +4,7 @@ using FastPIDC, DelimitedFiles
 
 export run_all_networks, save_matrix, save_edges_tsv
 
-function run_all_networks(data_file_path::AbstractString; config::PIDCConfig = PIDCConfig())
+function run_all_networks(data_file_path::AbstractString; config::PIDCConfig = PIDCConfig(backend = :cpu))
     nodes = get_nodes(data_file_path;
     discretizer = config.discretizer,
     estimator   = config.estimator)  # defaults: bayesian_blocks + maximum_likelihood

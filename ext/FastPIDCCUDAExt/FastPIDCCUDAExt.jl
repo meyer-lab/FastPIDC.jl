@@ -112,7 +112,7 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     k_bins = maximum(n -> n.number_of_bins, nodes)
     
     # 1. Prepare data on GPU
-    data_cpu = zeros(Int32, num_samples, num_nodes)
+    data_cpu = zeros(Int64, num_samples, num_nodes)
     marginals_cpu = zeros(Float64, k_bins, num_nodes)
     for i in 1:num_nodes
         data_cpu[:, i] .= Int32.(nodes[i].binned_values)
@@ -128,7 +128,7 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     mi_matrix_gpu = CuArray(zeros(Float64, num_nodes, num_nodes))
     
     # Large intermediate matrices
-    counts_matrix_gpu = CuArray(zeros(Int32, k_bins * k_bins * num_nodes * num_nodes))
+    counts_matrix_gpu = CuArray(zeros(Int64, k_bins * k_bins * num_nodes * num_nodes))
     si_matrix_gpu = CuArray(zeros(Float64, k_bins, num_nodes, num_nodes))
     
     if config.verbose

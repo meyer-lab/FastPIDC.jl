@@ -108,9 +108,9 @@ function compute_puc_full(nodes::Vector{Node};
     puc_scores = SharedArray{Float64}(number_of_nodes, number_of_nodes)
     fill!(puc_scores, 0.0)
 
-    # --- triplet enumeration -----------------------------------------
+    # --- determine computation backend -----------------------------------------
 
-    if config.triplet_backend == :cuda
+    if config.backend == :cuda
         if hasmethod(compute_puc_full_cuda, (typeof(nodes), typeof(config), typeof(base)))
             return compute_puc_full_cuda(nodes, config, base)
         else
@@ -127,7 +127,7 @@ function compute_puc_full(nodes::Vector{Node};
 
     mi_scores = nodepairs_to_mi(node_pairs)
 
-    # --- full triplet enumeration (legacy behavior) ------------------
+    # --- full PUC enumeration ------------------
 
     @sync @distributed for x in 1:number_of_nodes
         for z in x+1:number_of_nodes

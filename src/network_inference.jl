@@ -76,20 +76,10 @@ end
 function get_puc_scores(nodes, number_of_nodes, estimator, base;
     config::PIDCConfig = PIDCConfig())
     if config.verbose
-        println("[FastPIDC] Computing PUC scores.")
+        println("[FastPIDC] Computing PUC scores. Backend: $(config.backend)")
     end
-    if config.triplet_block_k > 0
-        # Pruned PUC
-        if config.triplet_backend == :distributed
-            return compute_puc_pruned_dist(nodes; estimator = estimator, base = base, config = config)
-        else
-            # default: threads
-            return compute_puc_pruned( nodes; estimator = estimator, base = base, config = config)
-        end
-    else
-        # Full PUC (no pruning)
-        return compute_puc_full(nodes; estimator = estimator, base = base, config = config)
-    end
+    
+    return compute_puc_full(nodes; estimator = estimator, base = base, config = config)
 end
 
 
@@ -138,106 +128,6 @@ function get_weights(inference, scores, number_of_nodes, nodes)
     return weights
 
 end
-
-"""
-    Build a symmetric Boolean mask keep[i,j] indicating which gene-gene
-    pairs should be kept, based on an MI k-NN graph
-
-    - For each gene i, we take its top-k MI neighbors (excluding itself)
-    - We then symmetrize: if j is in the top-k for i or i is in the top-k for j,
-    then keep[i,j] = keep[j,i] = true
-    - If k >= n - 1 we return an all-true mask, i.e. no pruning
-"""
-function build_knn_mask(mi_scores::AbstractMatrix{Float64}, k::Int)
-    n = size(mi_scores, 1)
-    @assert size(mi_scores, 2) == n "MI matrix must be square"
-
-    # If k is huge (or <= 0), just keep everything: no pruning
-    if k <= 0 || k >= n - 1
-        return trues(n, n)
-    end
-
-    keep = falses(n, n)
-
-    for i in 1:n
-        row = view(mi_scores, i, :)
-
-        # Get indices of top-k MI values in row i (descending order)
-        # (This may include i itself; we filter that out below)
-        idxs = partialsortperm(row, 1:k; rev = true)
-
-        for j in idxs
-            j == i && continue  # skip self
-            keep[i, j] = true
-            keep[j, i] = true   # symmetrize
-        end
-    end
-
-    return keep
-end
-
-
-"""
-
-Construct edges for PUC / PIDC when triplet pruning is enabled.
-
-    - Uses an MI-based k-NN mask from mi_scores and config.triplet_block_k
-    - Keeps a single, undirected edge for each unordered pair (i,j) with i < j
-    and keep[i,j] == true (so no AB/BA duplicate entries)
-    - When triplet_block_k == 0 or k >= n-1, falls back to the unpruned
-    behavior (all pairs kept)
-"""
-function build_edges_with_mi_pruning(
-    nodes::Vector{Node},
-    weights::AbstractMatrix{Float64},
-    mi_scores::AbstractMatrix{Float64};
-    config::PIDCConfig = PIDCConfig(),
-)
-    n = length(nodes)
-    @assert size(weights, 1) == n && size(weights, 2) == n
-    @assert size(mi_scores, 1) == n && size(mi_scores, 2) == n
-
-    k = config.triplet_block_k
-
-    # If pruning is disabled or k is effectively "all neighbors",
-    # behave like the legacy code and keep all unordered pairs.
-    if k <= 0 || k >= n - 1
-        edges = Edge[]
-        sizehint!(edges, binomial(n, 2))
-
-        for i in 1:n
-            node1 = nodes[i]
-            for j in i+1:n
-                node2 = nodes[j]
-                push!(edges, Edge([node1, node2], weights[i, j]))
-            end
-        end
-
-        sort!(edges; by = get_weight, rev = true)
-        return edges
-    end
-
-    # Otherwise: MI-based pruning
-    keep = build_knn_mask(mi_scores, k)
-
-    edges = Edge[]
-    # Heuristic upper bound: ~ 2k neighbors per node ⇒ O(2kn) unordered edges
-    sizehint!(edges, min(binomial(n, 2), 2k * n))
-
-    # NOTE: we only create an edge for i<j to match the original undirected API.
-    for i in 1:n
-        node1 = nodes[i]
-        for j in i+1:n
-            keep[i, j] || continue
-            node2 = nodes[j]
-            push!(edges, Edge([node1, node2], weights[i, j]))
-        end
-    end
-
-    sort!(edges; by = get_weight, rev = true)
-    return edges
-end
-
 
 
 """
@@ -301,70 +191,23 @@ function InferredNetwork(
             if config.verbose
                 println("[FastPIDC] Context weighting.")
             end
-
-            if config.context_mode == :pruned
-                if config.triplet_block_k <= 0
-                    error(
-                        "context_mode=:pruned requires triplet_block_k > 0. " *
-                        "Set context_mode=:legacy_dense for full PIDC."
-                    )
-                end
-            end
-
-            if config.context_mode == :legacy_dense
-                # Old behavior: allocate dense weights and compute all i<j
-                weights = get_weights(inference, scores, number_of_nodes, nodes)
-
-                # Build edges: pruned vs full
-                edges =
-                    if config.triplet_block_k > 0
-                        build_edges_with_mi_pruning(nodes, weights, mi_scores; config = config)
-                    else
-                        e = Edge[]
-                        sizehint!(e, binomial(number_of_nodes, 2))
-                        for i in 1:number_of_nodes
-                            for j in i+1:number_of_nodes
-                                push!(e, Edge([nodes[i], nodes[j]], weights[i, j]))
-                            end
-                        end
-                        sort!(e; by = get_weight, rev = true)
-                        e
-                    end
-
-                return InferredNetwork(nodes, edges)
-
-            elseif config.context_mode == :pruned
-                # Only compute context weights on candidate pairs
-                k = config.triplet_block_k
-                w, ei, ej = pidc_context_weights_pruned(scores, mi_scores, k)
-                edges = build_edges_from_pairs(nodes, ei, ej, w)
-                return InferredNetwork(nodes, edges)
-
-            else
-                error("Unknown context_mode = $(config.context_mode). Expected :legacy_dense or :pruned")
-            end
-
+            
+            weights = get_weights(inference, scores, number_of_nodes, nodes)
         else
-            # ---- No context (PUC): weights = scores ----
             weights = scores
-
-            edges =
-                if config.triplet_block_k > 0
-                    build_edges_with_mi_pruning(nodes, weights, mi_scores; config = config)
-                else
-                    e = Edge[]
-                    sizehint!(e, binomial(number_of_nodes, 2))
-                    for i in 1:number_of_nodes
-                        for j in i+1:number_of_nodes
-                            push!(e, Edge([nodes[i], nodes[j]], weights[i, j]))
-                        end
-                    end
-                    sort!(e; by = get_weight, rev = true)
-                    e
-                end
-
-            return InferredNetwork(nodes, edges)
         end
+
+        # Build full edge list
+        edges = Edge[]
+        sizehint!(edges, binomial(number_of_nodes, 2))
+        for i in 1:number_of_nodes
+            for j in i+1:number_of_nodes
+                push!(edges, Edge([nodes[i], nodes[j]], weights[i, j]))
+            end
+        end
+        sort!(edges; by = get_weight, rev = true)
+
+        return InferredNetwork(nodes, edges)
 
     else
         # ===== MI / CLR branch (no PUC) =====
