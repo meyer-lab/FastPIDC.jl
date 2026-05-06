@@ -140,9 +140,6 @@ function main()
     base         = parse(Int, get(args, "base", "2"))
     verbose_flag = parse_bool(get(args, "verbose", "false"))
 
-
-    This is the final major cleanup piece! We are officially putting the $k$-NN pruning era behind us and fully embracing the dense, hardware-accelerated approach.You are completely right to put the GPU validation in the CLI. In Julia, package extensions (like your FastPIDCCUDAExt) only activate if the trigger package (CUDA) is explicitly loaded in the current session. This means the CLI must load CUDA.jl for the GPU code to even exist!By putting a try-catch block around import CUDA directly in the CLI, we can instantly fast-fail and warn the user before they spend 5 minutes reading a massive expression matrix into RAM.Here is the fully updated CLI script:Julia#!/usr/bin/env julia
-
     using Dates
     using Printf
     using DelimitedFiles
