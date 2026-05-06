@@ -84,24 +84,16 @@ Basic options (match original PIDC):
   --n_bins INT            Number of bins (ignored by bayesian_blocks). Default: 10
   --base INT              Log base for MI (2, e, 10). Default: 2
 
-Scalability / pruning:
+Execution / Environment:
+  --backend STR           'cuda' (default) or 'cpu'. 
   --output-format STR     'tsv' (default) or Julia native sparse matrix 'mtx'
-  --n-threads INT         Logical threads you intend to use (for logging only).
-                          Actual threads come from JULIA_NUM_THREADS.
-   INT   k for PUC triplet pruning (0 = full PUC). Default: 0
-  --triplet-backend STR   'threads' (default), 'distributed', or 'cuda' (NVIDIA GPU).
-  --context-mode STR      Context weighting mode: 'legacy_dense' (default) or 'pruned'.
-                            Note: 'pruned' requires triplet-block-k > 0.
 
-
-MI dump:
+Diagnostics Dumps:
   --dump-mi-path PATH     If set, dump MI scores here (TSV).
-  --dump-mi-fraction F    Fraction of MI pairs to dump in descending order [0-1].
+  --dump-mi-fraction F    Fraction of MI pairs to dump in descending order [0.0-1.0].
                           Default: 1.0
-
-Pre-context PUC dump (diagnostics):
   --dump-puc-path PATH    If set, dump pre-context PUC scores here (TSV).
-  --dump-puc-fraction F   Fraction of (candidate) edges to dump in descending order [0-1].
+  --dump-puc-fraction F   Fraction of edges to dump in descending order [0.0-1.0].
                           Default: 1.0
 
 Other:
@@ -109,11 +101,9 @@ Other:
   --help, -h              Show this help and exit.
 
 Example:
-  julia -p 8 --project=. command_line_fastpidc.jl \\
-    --infile X.txt --outfile edges.tsv --delim space \\
-    --discretizer uniform_width --estimator maximum_likelihood \\
-    --n-bins 10 --base 2 \\
-    --triplet-block-k 50 --triplet-backend threads
+  julia --project=. command_line_fastpidc.jl \\
+    --infile X.txt --outfile edges.tsv \\
+    --backend cuda
 """
 
 
@@ -151,53 +141,181 @@ function main()
     verbose_flag = parse_bool(get(args, "verbose", "false"))
 
 
-    # ----------------- New scalability / pruning knobs ----------------
+    This is the final major cleanup piece! We are officially putting the $k$-NN pruning era behind us and fully embracing the dense, hardware-accelerated approach.You are completely right to put the GPU validation in the CLI. In Julia, package extensions (like your FastPIDCCUDAExt) only activate if the trigger package (CUDA) is explicitly loaded in the current session. This means the CLI must load CUDA.jl for the GPU code to even exist!By putting a try-catch block around import CUDA directly in the CLI, we can instantly fast-fail and warn the user before they spend 5 minutes reading a massive expression matrix into RAM.Here is the fully updated CLI script:Julia#!/usr/bin/env julia
 
-    # Threads: we **don't** change Threads.nthreads() here;
-    # we just read what the user requested and compare.
-    n_threads_req = parse(Int, get(args, "n-threads", string(Threads.nthreads())))
-    n_threads_act = Threads.nthreads()
-
-    if n_threads_req != n_threads_act
-        @warn "Requested n_threads = $n_threads_req, but JULIA_NUM_THREADS = $n_threads_act. " *
-              "Set JULIA_NUM_THREADS in the environment to change thread count."
+    using Dates
+    using Printf
+    using DelimitedFiles
+    using FastPIDC
+    using Distributed
+    using SparseArrays
+    using MatrixMarket
+    
+    
+    # ---------------- Logging helpers ----------------
+    macro say(msg)
+        return :(println("[$(Dates.format(now(), "HH:MM:SS"))] ", $(esc(msg))))
     end
-
-    triplet_block_k = parse(Int, get(args, "triplet-block-k", "0"))
-    triplet_backend = Symbol(get(args, "triplet-backend", "threads"))  # :threads or :distributed
-    context_mode = Symbol(get(args, "context-mode", "legacy_dense"))  # :legacy_dense or :pruned
-
-    if !(context_mode in (:legacy_dense, :pruned))
-        error("Unsupported --context-mode=$(context_mode). Use 'legacy_dense' or 'pruned'.")
+    
+    "Very simple --key value parser → Dict(\"key\" => \"value\")"
+    function parse_args()
+        args = Dict{String,String}()
+        i = 1
+        while i <= length(ARGS)
+            arg = ARGS[i]
+            if arg in ("--help", "-h")
+                args["help"] = "true"
+                i += 1
+                continue
+            elseif startswith(arg, "--")
+                key = arg[3:end]
+                i += 1
+                i > length(ARGS) && error("Missing value for --$key")
+                args[key] = ARGS[i]
+            end
+            i += 1
+        end
+        return args
     end
-
-    # Guardrail: pruned context only makes sense with a pruned candidate edge set
-    if context_mode == :pruned && triplet_block_k <= 0
-        error("--context-mode pruned requires --triplet-block-k > 0 (since candidate pairs come from MI-kNN pruning).")
+    
+    function parse_delim(s::AbstractString)
+        s_l = lowercase(strip(s))
+    
+        if s_l == "space" || s_l == " "
+            return ' '
+        elseif s_l == "tab" || s_l == "\\t"
+            return '\t'
+        elseif s_l == "comma" || s_l == ","
+            return ','
+        elseif s_l == "pipe" || s_l == "|"
+            return '|'
+        elseif s_l == "auto" || s_l == "false"
+            return false
+        elseif ncodeunits(s) == 1
+            return s[1]
+        else
+            error("Unsupported --delim=\"$s\". Use one of: space, tab, comma, pipe, auto, or a single character.")
+        end
     end
+    
+    "Parse a boolean-ish string like \"true\"/\"false\"/\"1\"/\"0\"."
+    function parse_bool(s::AbstractString)
+        s_l = lowercase(strip(s))
+        return s_l in ("1", "true", "t", "yes", "y", "on")
+    end
+    
+    # ---------------- CLI help text ----------------
+    const HELP_TEXT = """
+    FastPIDC command-line runner (GPU-Accelerated Network Inference)
+    
+    Required:
+      --infile PATH           Path to input expression table (space/CSV/TSV-like)
+      --outfile PATH          Where to write PIDC edge list (TSV)
+    
+    Basic options:
+      --delim STR             One of: 'space', 'tab', 'comma', 'pipe' or a single char.
+                              Default: 'space'
+      --discretizer STR       e.g. 'uniform_width', 'bayesian_blocks'
+                              Default: 'bayesian_blocks'
+      --estimator STR         e.g. 'maximum_likelihood'
+                              Default: 'maximum_likelihood'
+      --n_bins INT            Number of bins (ignored by bayesian_blocks). Default: 10
+      --base INT              Log base for MI (2, e, 10). Default: 2
+    
+    Execution / Environment:
+      --backend STR           'cuda' (default) or 'cpu'. 
+      --output-format STR     'tsv' (default) or Julia native sparse matrix 'mtx'
+      --n-threads INT         Logical threads you intend to use (for logging only).
+                              Actual threads come from JULIA_NUM_THREADS.
+    
+    Diagnostics Dumps:
+      --dump-mi-path PATH     If set, dump MI scores here (TSV).
+      --dump-mi-fraction F    Fraction of MI pairs to dump in descending order [0.0-1.0].
+                              Default: 1.0
+      --dump-puc-path PATH    If set, dump pre-context PUC scores here (TSV).
+      --dump-puc-fraction F   Fraction of edges to dump in descending order [0.0-1.0].
+                              Default: 1.0
+    
+    Other:
+      --verbose               Print detailed progress information
+      --help, -h              Show this help and exit.
+    
+    Example:
+      julia --project=. command_line_fastpidc.jl \\
+        --infile X.txt --outfile edges.tsv \\
+        --backend cuda
+    """
+    
+    function main()
+        args = parse_args()
+    
+        # ----------------- Help handling -----------------
+        if parse_bool(get(args, "help", "false"))
+            println(HELP_TEXT)
+            return
+        end
+    
+        # ----------------- Required arguments -----------------
+        infile  = get(args, "infile",  nothing)
+        outfile = get(args, "outfile", nothing)
+    
+        infile === nothing  && error("Missing required argument --infile")
+        outfile === nothing && error("Missing required argument --outfile")
+        
+        output_format = Symbol(lowercase(get(args, "output-format", "tsv")))
+        if !(output_format in (:tsv, :mtx))
+            error("Unsupported --output-format=$(output_format). Use 'tsv' or 'mtx'.")
+        end
+    
+        # ----------------- Legacy PIDC options ----------------
+        delim_str    = get(args, "delim", "space")
+        delim        = parse_delim(delim_str)
+        discretizer  = get(args, "discretizer", "bayesian_blocks")
+        estimator    = get(args, "estimator", "maximum_likelihood")
+        n_bins       = parse(Int, get(args, "n_bins", "10"))
+        base         = parse(Int, get(args, "base", "2"))
+        verbose_flag = parse_bool(get(args, "verbose", "false"))
+    
+        # ----------------- Execution Environment ----------------
+        n_threads_act = Threads.nthreads()
+        backend = Symbol(lowercase(get(args, "backend", "cuda")))
+    
+        # --- FAST FAIL GPU CHECK ---
+        # We load CUDA dynamically in the Main module to trigger FastPIDCCUDAExt
+        if backend == :cuda
+            @say "Checking for CUDA availability..."
+            try
+                Core.eval(Main, :(import CUDA))
+                is_functional = Core.eval(Main, :(CUDA.functional()))
+                if !is_functional
+                    error("CUDA.jl is installed, but no functional GPU was detected. Try running with --backend cpu")
+                end
+                @say "CUDA GPU detected successfully."
+            catch e
+                if isa(e, ErrorException)
+                    rethrow(e)
+                else
+                    error("Failed to load CUDA.jl. Please ensure CUDA is installed in your Julia environment, or run with --backend cpu.")
+                end
+            end
+        end
 
 
-    dump_mi_path     = haskey(args, "dump-mi-path") ? args["dump-mi-path"] : nothing
-    dump_mi_fraction = parse(Float64, get(args, "dump-mi-fraction", "1.0"))
-
+    # ----------------- Diagnostics ----------------
+    dump_mi_path      = haskey(args, "dump-mi-path") ? args["dump-mi-path"] : nothing
+    dump_mi_fraction  = parse(Float64, get(args, "dump-mi-fraction", "1.0"))
     dump_puc_path     = haskey(args, "dump-puc-path") ? args["dump-puc-path"] : nothing
     dump_puc_fraction = parse(Float64, get(args, "dump-puc-fraction", "1.0"))
 
-
-    # ----------------- Build PIDCConfig (fully wired) ----------------
+    # ----------------- Build PIDCConfig ----------------
 
     cfg = PIDCConfig(
-        n_threads         = n_threads_req,
-        triplet_block_k   = triplet_block_k,
-        triplet_backend   = triplet_backend,
-        discretizer       = discretizer,
-        estimator         = estimator,
+        backend           = backend,
         dump_mi_path      = dump_mi_path,
         dump_mi_fraction  = dump_mi_fraction,
-        dump_puc_path      = dump_puc_path,
-        dump_puc_fraction  = dump_puc_fraction,
-        context_mode      = context_mode,
-        verbose           = verbose_flag,
+        dump_puc_path     = dump_puc_path,
+        dump_puc_fraction = dump_puc_fraction,
+        verbose           = verbose_flag
     )
 
     println(">>> FastPIDC run configuration")
@@ -209,33 +327,28 @@ function main()
     println("  estimator        = $estimator")
     println("  n_bins           = $n_bins")
     println("  base             = $base")
-    println("  n_threads (cfg)  = $(cfg.n_threads)   (JULIA_NUM_THREADS = $n_threads_act)")
-    println("  triplet_block_k  = $(cfg.triplet_block_k)")
-    println("  triplet_backend  = $(cfg.triplet_backend)")
+    println("  backend          = $(cfg.backend)")
+    println("  (JULIA_NUM_THREADS = $n_threads_act)")
     println("  dump_mi_path     = $(cfg.dump_mi_path === nothing ? "none" : cfg.dump_mi_path)")
     println("  dump_mi_fraction = $(cfg.dump_mi_fraction)")
-    println("  dump_puc_path     = $(cfg.dump_puc_path === nothing ? "none" : cfg.dump_puc_path)")
-    println("  dump_puc_fraction = $(cfg.dump_puc_fraction)")
-    println("  context_mode     = $(cfg.context_mode)")
-    println("  verbose = $(cfg.verbose)")
+    println("  dump_puc_path    = $(cfg.dump_puc_path === nothing ? "none" : cfg.dump_puc_path)")
+    println("  dump_puc_fraction= $(cfg.dump_puc_fraction)")
+    println("  verbose          = $(cfg.verbose)")
     println()
 
     # ----------------- Run PIDC ----------------
     @say "Reading data from $infile ..."
-    n_workers = isdefined(Main, :Distributed) ? Distributed.nprocs() : 1
-    @say "Workers: $n_workers"
-
     t_start = time()
 
     net = infer_network(
         infile,
         PIDCNetworkInference();
-        delim       = delim,
-        discretizer = discretizer,
-        estimator   = estimator,
-        number_of_bins      = n_bins,
-        base        = base,
-        config      = cfg,
+        delim         = delim,
+        discretizer   = discretizer,
+        estimator     = estimator,
+        number_of_bins= n_bins,
+        base          = base,
+        config        = cfg,
         out_file_path = outfile,
         output_format = output_format
     )
@@ -243,7 +356,6 @@ function main()
     @say "Wrote edges to $(outfile)"
     t_total = time() - t_start
     @say @sprintf("All done. Total runtime: %.1f s", t_total)
-
 end
 
 # Ensure we get a traceback for errors
