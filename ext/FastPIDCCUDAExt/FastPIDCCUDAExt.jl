@@ -24,7 +24,7 @@ function joint_counts_kernel_batched(data, counts, n, m, k_bins)
         if u >= 1 && u <= k_bins && v >= 1 && v <= k_bins
             # idx for counts[u, v, x, z]
             idx = UInt64((z-1)*n*k_bins*k_bins + (x-1)*k_bins*k_bins + (v-1)*k_bins + u)
-            counts[idx] += Int64(1)
+            counts[idx] += Int32(1)
         end
     end
     
@@ -115,7 +115,7 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     data_cpu = zeros(Int64, num_samples, num_nodes)
     marginals_cpu = zeros(Float64, k_bins, num_nodes)
     for i in 1:num_nodes
-        data_cpu[:, i] .= Int64.(nodes[i].binned_values)
+        data_cpu[:, i] .= Int32.(nodes[i].binned_values)
         p = nodes[i].probabilities
         marginals_cpu[1:length(p), i] .= Float64.(p)
     end
@@ -141,19 +141,19 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     
     @cuda threads=gs blocks=gr joint_counts_kernel_batched(
         data_gpu, counts_matrix_gpu,
-        Int64(num_nodes), Int64(num_samples), Int64(k_bins)
+        Int32(num_nodes), Int32(num_samples), Int32(k_bins)
     )
     
     # Step 2: MI and SI
     @cuda threads=gs blocks=gr mi_si_kernel_batched(
         counts_matrix_gpu, marginals_gpu, mi_matrix_gpu, si_matrix_gpu,
-        Int64(num_nodes), Int64(num_samples), Int64(k_bins)
+        Int32(num_nodes), Int32(num_samples), Int32(k_bins)
     )
     
     # Step 3: PUC Accumulation
     @cuda threads=gs blocks=gr puc_accumulation_kernel_batched(
         si_matrix_gpu, mi_matrix_gpu, puc_scores_gpu, marginals_gpu,
-        Int64(num_nodes), Int64(k_bins)
+        Int32(num_nodes), Int32(k_bins)
     )
     
     # 3. Copy results back
