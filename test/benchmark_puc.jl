@@ -27,7 +27,7 @@ println("Loaded $num_nodes nodes.")
 
 # Warmup and Baseline (CPU - Distributed with 10 workers)
 println("\n--- CPU Distributed ($(nprocs()-1) workers) ---")
-config_cpu = PIDCConfig(triplet_backend=:distributed, verbose=false)
+config_cpu = PIDCConfig(backend=:cpu, verbose=false)
 # Warmup
 InferredNetwork(PUCNetworkInference(), nodes[1:min(100, num_nodes)], config=config_cpu)
 t_cpu = @elapsed InferredNetwork(PUCNetworkInference(), nodes, config=config_cpu)
@@ -35,7 +35,7 @@ println("CPU Distributed time: $t_cpu seconds")
 
 # CUDA Backend
 println("\n--- CUDA GPU ---")
-config_cuda = PIDCConfig(triplet_backend=:cuda, verbose=false)
+config_cuda = PIDCConfig(backend=:cuda, verbose=false)
 # Warmup
 InferredNetwork(PUCNetworkInference(), nodes[1:min(100, num_nodes)], config=config_cuda)
 # Benchmark

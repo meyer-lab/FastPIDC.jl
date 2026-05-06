@@ -18,7 +18,7 @@ isdir(OUT_DIR) || mkpath(OUT_DIR)
 
     # Small k just to exercise pruned PIDC path
     cfg = PIDCConfig(
-        triplet_block_k = 50,
+        backend= :cpu,
         dump_mi_path = mi_file,
         dump_mi_fraction = 0.1,   # top 10% MI pairs
         dump_puc_path     = puc_file,
@@ -39,9 +39,4 @@ isdir(OUT_DIR) || mkpath(OUT_DIR)
     @test length(puc_lines) > 1
     @test startswith(puc_lines[1], "gene_i\tgene_j\tpuc")
 
-    # n = length(nodes)
-    # max_pairs = n * (n - 1) ÷ 2
-    # n_rows = length(lines) - 1
-
-    # @test 1 <= n_rows <= max_pairs
 end
