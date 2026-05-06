@@ -18,9 +18,7 @@ end
 
 # --- PIDC configuration -------------------------------------------
 Base.@kwdef struct PIDCConfig
-    n_threads::Int = Threads.nthreads()         # reserved for adjusting threading vs processing
-    triplet_block_k::Int = 0                    # 0 => full PUC, >0 => pruned PUC
-    triplet_backend::Symbol = :threads          # :threads (default), :distributed, or :cuda (NVIDIA GPU)
+    backend::Symbol = :cuda                     # :cuda (default) or :cpu
     discretizer::String = "bayesian_blocks"     # mirrors existing default
     estimator::String = "maximum_likelihood"    # mirrors existing default
     dump_mi_path::Union{Nothing,String} = nothing  # If nothing => don't dump
@@ -28,7 +26,25 @@ Base.@kwdef struct PIDCConfig
     dump_puc_path::Union{Nothing,String} = nothing  # If nothing => don't dump
     dump_puc_fraction::Float64 = 1.0                # 0–1; 1.0 = all pairs
     verbose::Bool = false
-    context_mode::Symbol = :legacy_dense  # :legacy_dense | :pruned
+    # Inner constructor for automatic validation
+    function PIDCConfig(backend, discretizer, estimator, 
+        dump_mi_path, dump_mi_fraction, dump_puc_path, 
+        dump_puc_fraction, verbose)
+
+        if !(backend in (:cpu, :cuda))
+        throw(ArgumentError("backend must be :cpu or :cuda, got :$backend"))
+        end
+        if !(0.0 <= dump_mi_fraction <= 1.0)
+        throw(ArgumentError("dump_mi_fraction must be between 0.0 and 1.0"))
+        end
+        if !(0.0 <= dump_puc_fraction <= 1.0)
+        throw(ArgumentError("dump_puc_fraction must be between 0.0 and 1.0"))
+        end
+
+        new(backend, discretizer, estimator, 
+        dump_mi_path, dump_mi_fraction, dump_puc_path, 
+        dump_puc_fraction, verbose)
+    end
 end
 
 

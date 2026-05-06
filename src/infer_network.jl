@@ -258,7 +258,7 @@ function infer_network(data_file_path::String, inference::AbstractNetworkInferen
     )
 
     println("Inferring network...")
-    inferred_network = InferredNetwork(inference, nodes, estimator = estimator, base = base, config = config) # Calling without config behave as before
+    inferred_network = InferredNetwork(inference, nodes, estimator = estimator, base = base, config = config)
 
     if length(out_file_path) > 1
         println("Writing network to file...")

@@ -25,12 +25,6 @@ end
 
 Dump pre-context PUC scores to TSV at config.dump_puc_path.
 
-Behavior:
-- If config.triplet_block_k <= 0 OR mi_scores === nothing:
-    dump ALL i<j pairs (dense).
-- Else (k>0 and mi_scores provided):
-    dump ONLY candidate pairs according to build_knn_mask(mi_scores, k).
-- In both cases, sort by score desc and take top config.dump_puc_fraction.
 """
 function dump_puc_scores(scores::AbstractMatrix{<:Real},
                          nodes::Vector,
@@ -44,32 +38,18 @@ function dump_puc_scores(scores::AbstractMatrix{<:Real},
     @assert size(scores, 2) == n
     @assert length(nodes) == n
 
-    k = config.triplet_block_k
-    use_mask = (k > 0) && (mi_scores !== nothing) && (k < n - 1)
-
     # Collect candidate (i,j,score)
     ei = Int[]
     ej = Int[]
     w  = Float64[]
 
-    if use_mask
-        keep = build_knn_mask(Float64.(mi_scores), k)
-        # only i<j
-        for i in 1:n
-            for j in i+1:n
-                keep[i,j] || continue
-                push!(ei, i); push!(ej, j); push!(w, Float64(scores[i,j]))
-            end
-        end
-    else
-        # dump all unordered pairs
-        sizehint!(ei, n*(n-1) ÷ 2)
-        sizehint!(ej, n*(n-1) ÷ 2)
-        sizehint!(w,  n*(n-1) ÷ 2)
-        for i in 1:n
-            for j in i+1:n
-                push!(ei, i); push!(ej, j); push!(w, Float64(scores[i,j]))
-            end
+    # dump all unordered pairs
+    sizehint!(ei, n*(n-1) ÷ 2)
+    sizehint!(ej, n*(n-1) ÷ 2)
+    sizehint!(w,  n*(n-1) ÷ 2)
+    for i in 1:n
+        for j in i+1:n
+            push!(ei, i); push!(ej, j); push!(w, Float64(scores[i,j]))
         end
     end
 
