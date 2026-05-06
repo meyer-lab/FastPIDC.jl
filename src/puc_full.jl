@@ -150,7 +150,7 @@ function compute_puc_full(nodes::Vector{Node};
             end
         end
     end
-    
+
 
     return mi_scores, Array(puc_scores)
 end
