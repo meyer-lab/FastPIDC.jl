@@ -2,7 +2,7 @@
 # Will not load if EmpiricalBayes does not exist.
 
 # Check for EmpiricalBayes package
-EB_EXISTS = in("EmpiricalBayes", keys(Pkg.installed())) ? true : false
+EB_EXISTS = any(x -> x.name == "EmpiricalBayes", values(Pkg.dependencies()))
 
 # Only load if package exists
 if EB_EXISTS
@@ -153,9 +153,9 @@ if EB_EXISTS
         end
 
         # Remove infinite values
-        eb_edges = filter(x->isfinite(x.weight), eb_edges)
+        eb_edges = filter(x -> isfinite(x.weight), eb_edges)
 
-        sort!(eb_edges, rev = true, by = x->x.weight)
+        sort!(eb_edges, rev = true, by = x -> x.weight)
 
         return InferredNetwork(network.nodes, eb_edges)
     end
