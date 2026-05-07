@@ -4,9 +4,11 @@
 # This is intended for diagnostics (KDE, ECDF, threshold tuning) outside
 # the core package.
 
-function dump_mi_scores(mi_scores::AbstractMatrix{Float64},
+function dump_mi_scores(
+    mi_scores::AbstractMatrix{Float64},
     nodes::Vector{Node},
-    config::PIDCConfig)
+    config::PIDCConfig,
+)
 
     path = config.dump_mi_path
     path === nothing && return  # no-op if not requested
@@ -19,9 +21,9 @@ function dump_mi_scores(mi_scores::AbstractMatrix{Float64},
     pairs = Vector{Tuple{Float64,Int,Int}}()
     sizehint!(pairs, n * (n - 1) ÷ 2)
 
-    for i in 1:n
-        for j in i+1:n
-            push!(pairs, (mi_scores[i,j], i, j))
+    for i = 1:n
+        for j = (i+1):n
+            push!(pairs, (mi_scores[i, j], i, j))
         end
     end
 

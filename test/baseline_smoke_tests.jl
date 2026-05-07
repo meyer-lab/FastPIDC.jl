@@ -7,7 +7,7 @@ using SparseArrays
 
 # Paths
 const DATA_DIR = joinpath(dirname(@__FILE__), "data")
-const OUT_DIR  = joinpath(dirname(@__FILE__), "baseline_outputs")
+const OUT_DIR = joinpath(dirname(@__FILE__), "baseline_outputs")
 isdir(OUT_DIR) || mkpath(OUT_DIR)
 
 const TIMINGS_PATH = joinpath(OUT_DIR, "timings.tsv")
@@ -42,19 +42,18 @@ end
     (mi2, clr2, puc2, pidc2) = t2.value
 
     # Determinism: check a subset of weights and full edge order equality
-    @test length(mi1.edges)   == length(mi2.edges)
-    @test length(puc1.edges)  == length(puc2.edges)
+    @test length(mi1.edges) == length(mi2.edges)
+    @test length(puc1.edges) == length(puc2.edges)
     @test length(pidc1.edges) == length(pidc2.edges)
 
     # Exact equality should hold given deterministic pipeline; if CI noise appears,
     # switch to ≈ with tiny tolerance.
     for idx in (1, 5, 10, 50, length(pidc1.edges))
-        @test mi1.edges[idx].weight   == mi2.edges[idx].weight
-        @test clr1.edges[idx].weight  == clr2.edges[idx].weight
-        @test puc1.edges[idx].weight  == puc2.edges[idx].weight
+        @test mi1.edges[idx].weight == mi2.edges[idx].weight
+        @test clr1.edges[idx].weight == clr2.edges[idx].weight
+        @test puc1.edges[idx].weight == puc2.edges[idx].weight
         @test pidc1.edges[idx].weight == pidc2.edges[idx].weight
-        @test Set([n.label for n in pidc1.edges[idx].nodes]) ==
-              Set([n.label for n in pidc2.edges[idx].nodes])
+        @test Set([n.label for n in pidc1.edges[idx].nodes]) == Set([n.label for n in pidc2.edges[idx].nodes])
     end
 
     # Persist snapshots for later diffs (original vs. modernized)
@@ -76,29 +75,26 @@ end
     function count_nonzero_entries_from_tsv(path::String)
         mat = readdlm(path, '\t')
         n_nonzero = 0
-    
-        for i in 1:size(mat, 1)
+
+        for i = 1:size(mat, 1)
             w = Float64(mat[i, 3])
             w == 0.0 && continue
             n_nonzero += 1
         end
-    
+
         return n_nonzero
     end
 
     # Swap this path if your actual toy 1k x 200 file has a different name
     data_file = joinpath(DATA_DIR, "toy_small_200.txt")
 
-    cfg = PIDCConfig(
-        backend = :cpu,
-        verbose = false,
-    )
+    cfg = PIDCConfig(backend = :cpu, verbose = false)
 
     nodes = get_nodes(data_file)
     net = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg)
 
-    tsv_path   = joinpath(OUT_DIR, "toy_pidc_edges.tsv")
-    mtx_path   = joinpath(OUT_DIR, "toy_pidc_edges.mtx")
+    tsv_path = joinpath(OUT_DIR, "toy_pidc_edges.tsv")
+    mtx_path = joinpath(OUT_DIR, "toy_pidc_edges.mtx")
     genes_path = joinpath(OUT_DIR, "toy_pidc_edges_genes.txt")
 
     # Write both formats
@@ -128,5 +124,5 @@ end
     @test nnz(A) == n_unique_pairs
 
     # Diagonal should be zero
-    @test all(A[i, i] == 0.0 for i in 1:size(A, 1))
+    @test all(A[i, i] == 0.0 for i = 1:size(A, 1))
 end

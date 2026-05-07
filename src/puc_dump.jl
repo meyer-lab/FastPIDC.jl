@@ -26,10 +26,12 @@ end
 Dump pre-context PUC scores to TSV at config.dump_puc_path.
 
 """
-function dump_puc_scores(scores::AbstractMatrix{<:Real},
-                         nodes::Vector,
-                         config::PIDCConfig;
-                         mi_scores::Union{Nothing,AbstractMatrix{<:Real}} = nothing)
+function dump_puc_scores(
+    scores::AbstractMatrix{<:Real},
+    nodes::Vector,
+    config::PIDCConfig;
+    mi_scores::Union{Nothing,AbstractMatrix{<:Real}} = nothing,
+)
 
     path = config.dump_puc_path
     path === nothing && return nothing
@@ -41,26 +43,29 @@ function dump_puc_scores(scores::AbstractMatrix{<:Real},
     # Collect candidate (i,j,score)
     ei = Int[]
     ej = Int[]
-    w  = Float64[]
+    w = Float64[]
 
     # dump all unordered pairs
     sizehint!(ei, n*(n-1) ÷ 2)
     sizehint!(ej, n*(n-1) ÷ 2)
-    sizehint!(w,  n*(n-1) ÷ 2)
-    for i in 1:n
-        for j in i+1:n
-            push!(ei, i); push!(ej, j); push!(w, Float64(scores[i,j]))
+    sizehint!(w, n*(n-1) ÷ 2)
+    for i = 1:n
+        for j = (i+1):n
+            push!(ei, i);
+            push!(ej, j);
+            push!(w, Float64(scores[i, j]))
         end
     end
 
-    ord = sortperm(w; rev=true)
+    ord = sortperm(w; rev = true)
     keep_n = _nkeep(length(ord), config.dump_puc_fraction)
 
     open(path, "w") do io
         println(io, "gene_i\tgene_j\tpuc")
-        @inbounds for u in 1:keep_n
+        @inbounds for u = 1:keep_n
             t = ord[u]
-            i = ei[t]; j = ej[t]
+            i = ei[t];
+            j = ej[t]
             @printf(io, "%s\t%s\t%.17g\n", _label(nodes[i]), _label(nodes[j]), w[t])
         end
     end
