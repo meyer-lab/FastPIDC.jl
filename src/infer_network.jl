@@ -77,29 +77,35 @@ function write_network_file(file_path::String, inferred_network::InferredNetwork
 end
 
 """
-    write_network_mtx(file_path::String, inferred_network::InferredNetwork)
+    write_network_npy(file_path::String, inferred_network::InferredNetwork)
 
-Writes an inferred undirected weighted network as a sparse Matrix Market file
+Writes an inferred undirected weighted network as a dense NumPy binary file (.npy)
 plus a sidecar gene list file preserving row/column order.
 
 Outputs:
-* `file_path`            : sparse weighted adjacency matrix in Matrix Market format
-* `<stem>.genes.txt`     : one gene label per line, matching matrix row/column order
+* `file_path`            : N x N dense weighted adjacency matrix in .npy format (Float32)
+* `<stem>_genes.txt`     : one gene label per line, matching matrix row/column order
 
-The matrix is symmetric with zero diagonal.
+To load in Python:
+    import numpy as np
 
-To load in python:
-    from scipy.io import mmread
+    A = np.load("network.npy")
 
-    A = mmread("network.mtx").tocsr()
-
-    with open("network.genes.txt") as f:
+    with open("network_genes.txt") as f:
         genes = [line.strip() for line in f]
 """
-function write_network_mtx(file_path::String, inferred_network::InferredNetwork)
+function write_network_npy(file_path::String, inferred_network::InferredNetwork)
 
-    # Preserve node order exactly as stored in inferred_network.nodes
-    labels = [node.label for node in inferred_network.nodes]
+    # Ensure the file path correctly ends in .npy
+    if !endswith(file_path, ".npy")
+        file_path = replace(file_path, r"\.[a-zA-Z0-9]+$" => ".npy")
+        if !endswith(file_path, ".npy")
+            file_path *= ".npy"
+        end
+    end
+
+    # Extract node labels and map them to matrix indices
+    labels = [String(node.label) for node in inferred_network.nodes]
     n = length(labels)
 
     labels_to_ids = Dict{String,Int}()
@@ -107,36 +113,27 @@ function write_network_mtx(file_path::String, inferred_network::InferredNetwork)
         labels_to_ids[label] = i
     end
 
-    # Build symmetric sparse adjacency
-    m = length(inferred_network.edges)
-    nnz_sym = 2 * m
+    # Build symmetric dense adjacency matrix initialized with zeros
+    A = zeros(Float32, n, n)
 
-    rows = Vector{Int}(undef, nnz_sym)
-    cols = Vector{Int}(undef, nnz_sym)
-    vals = Vector{Float64}(undef, nnz_sym)
-
-    k = 1
     for edge in inferred_network.edges
-        i = labels_to_ids[edge.nodes[1].label]
-        j = labels_to_ids[edge.nodes[2].label]
-        w = Float64(edge.weight)
+        i = labels_to_ids[String(edge.nodes[1].label)]
+        j = labels_to_ids[String(edge.nodes[2].label)]
+        
+        # Cast to Float32 to save disk space and memory footprint
+        w = Float32(edge.weight)
 
         # store both directions for symmetric adjacency
-        rows[k] = i; cols[k] = j; vals[k] = w; k += 1
-        rows[k] = j; cols[k] = i; vals[k] = w; k += 1
+        A[i, j] = w
+        A[j, i] = w
     end
 
-    A = sparse(rows, cols, vals, n, n)
-
-    # Write Matrix Market file
-    mmwrite(file_path, A)
+    # Write dense NumPy binary file (NPZ.jl handles raw arrays)
+    npzwrite(file_path, A)
 
     # Write matching gene list sidecar
-    genes_path = replace(file_path, r"\.mtx$" => "_genes.txt")
-    if genes_path == file_path
-        genes_path = file_path * "_genes.txt"
-    end
-
+    genes_path = replace(file_path, ".npy" => "_genes.txt")
+    
     open(genes_path, "w") do io
         for g in labels
             println(io, g)
@@ -265,10 +262,10 @@ function infer_network(data_file_path::String, inference::AbstractNetworkInferen
 
         if output_format == :tsv
             write_network_file(out_file_path, inferred_network)
-        elseif output_format == :mtx
-            write_network_mtx(out_file_path, inferred_network)
+        elseif output_format == :npy
+            write_network_npy(out_file_path, inferred_network)
         else
-            error("Unsupported output_format=$(output_format). Use :tsv or :mtx.")
+            error("Unsupported output_format=$(output_format). Use :tsv or :npy.")
         end
     end
 

@@ -2,7 +2,7 @@ using Test, DelimitedFiles
 using .BaselineHelpers
 using FastPIDC
 using Distributed
-using MatrixMarket
+using NPZ
 using SparseArrays
 
 # Paths
@@ -56,23 +56,9 @@ end
         @test Set([n.label for n in pidc1.edges[idx].nodes]) ==
               Set([n.label for n in pidc2.edges[idx].nodes])
     end
-
-    # Persist snapshots for later diffs (original vs. modernized)
-    BaselineHelpers.save_edges_tsv(joinpath(OUT_DIR, "pidc_toy_edges.tsv"), pidc1)
-
-    # # Log timings/allocations to a simple TSV
-    # open(TIMINGS_PATH, "w") do io
-    #     println(io, "phase\twall_seconds\talloc_bytes")
-    #     println(io, "toy_200_first\t$(t1.time)\t$(t1.bytes)")
-    #     println(io, "toy_200_second\t$(t2.time)\t$(t2.bytes)")
-    # end
-
-    # @info "Toy timings (s)" first=t1.time second=t2.time
-    # @info "Toy allocations (bytes)" first=t1.bytes second=t2.bytes
-
 end
 
-@testset "Toy dataset writes TSV and MTX consistently" begin
+@testset "Toy dataset writes TSV and NPY consistently" begin
     function count_nonzero_entries_from_tsv(path::String)
         mat = readdlm(path, '\t')
         n_nonzero = 0
@@ -98,35 +84,40 @@ end
     net = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg)
 
     tsv_path   = joinpath(OUT_DIR, "toy_pidc_edges.tsv")
-    mtx_path   = joinpath(OUT_DIR, "toy_pidc_edges.mtx")
+    npy_path   = joinpath(OUT_DIR, "toy_pidc_edges.npy")
     genes_path = joinpath(OUT_DIR, "toy_pidc_edges_genes.txt")
 
     # Write both formats
     write_network_file(tsv_path, net)
-    write_network_mtx(mtx_path, net)
+    write_network_npy(npy_path, net)
 
-    # Smoke checks: files exist
-    @test isfile(tsv_path)
-    @test isfile(mtx_path)
-    @test isfile(genes_path)
+    # Read the sidecar genes file back in
+    loaded_genes = readlines(genes_path)
+    expected_genes = [String(node.label) for node in net.nodes]
 
-    # Read MTX back in Julia
-    A = MatrixMarket.mmread(mtx_path)
-
-    # Read gene list sidecar
-    genes = readlines(genes_path)
+    # Read NPY back in Julia
+    A = npzread(npy_path)
 
     # Basic consistency checks
     n = length(net.nodes)
     @test size(A, 1) == n
     @test size(A, 2) == n
-    @test length(genes) == n
+    
+    # Check that the genes sidecar has the correct size and order
+    @test length(loaded_genes) == n
+    @test loaded_genes == expected_genes
 
     # If internal net.edges stores each undirected edge once,
     # the symmetric matrix should have 2*E nonzeros.
     n_unique_pairs = count_nonzero_entries_from_tsv(tsv_path)
-    @test nnz(A) == n_unique_pairs
+    
+    # Since Float32 might have tiny variations from Float64 TSV parsing, 
+    # counting non-zeros is a robust check
+    n_nonzero_npy = count(x -> x != 0.0f0, A)
+
+    # They should match exactly
+    @test n_nonzero_npy == n_unique_pairs
 
     # Diagonal should be zero
-    @test all(A[i, i] == 0.0 for i in 1:size(A, 1))
+    @test all(A[i, i] == 0.0f0 for i in 1:size(A, 1))
 end
