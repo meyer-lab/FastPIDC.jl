@@ -31,7 +31,7 @@ function get_joint_probabilities(node1, node2, estimator)
         node1.binned_values,
         node2.binned_values,
         node1.number_of_bins,
-        node2.number_of_bins
+        node2.number_of_bins,
     )
 
     probabilities = get_probabilities(estimator, frequencies)
@@ -48,22 +48,34 @@ function get_joint_probabilities(node1, node2, estimator)
 end
 
 # Gets the mutual information between all pairs of Nodes.
-function get_mi_scores(nodes, number_of_nodes, estimator, base; config::PIDCConfig = PIDCConfig())
-     # Legacy path
+function get_mi_scores(
+    nodes,
+    number_of_nodes,
+    estimator,
+    base;
+    config::PIDCConfig = PIDCConfig(),
+)
+    # Legacy path
     function get_mi(node1, node2, i, j, base, mi_scores)
-        probabilities, probabilities1, probabilities2 = get_joint_probabilities(node1, node2, estimator)
-        mi = apply_mutual_information_formula(probabilities, probabilities1, probabilities2, base)
+        probabilities, probabilities1, probabilities2 =
+            get_joint_probabilities(node1, node2, estimator)
+        mi = apply_mutual_information_formula(
+            probabilities,
+            probabilities1,
+            probabilities2,
+            base,
+        )
         mi_scores[i, j] = mi
         mi_scores[j, i] = mi
     end
 
     mi_scores = SharedArray{Float64}(number_of_nodes, number_of_nodes)
 
-    @sync @distributed for i in 1 : number_of_nodes
+    @sync @distributed for i = 1:number_of_nodes
         if config.verbose && i % 500 == 0
             println("[FastPIDC] Distributed MI progress: x = $i / $number_of_nodes")
         end
-        for j in i+1 : number_of_nodes
+        for j = (i+1):number_of_nodes
             get_mi(nodes[i], nodes[j], i, j, base, mi_scores)
         end
     end
@@ -73,12 +85,17 @@ function get_mi_scores(nodes, number_of_nodes, estimator, base; config::PIDCConf
 end
 
 
-function get_puc_scores(nodes, number_of_nodes, estimator, base;
-    config::PIDCConfig = PIDCConfig())
+function get_puc_scores(
+    nodes,
+    number_of_nodes,
+    estimator,
+    base;
+    config::PIDCConfig = PIDCConfig(),
+)
     if config.verbose
         println("[FastPIDC] Computing PUC scores. Backend: $(config.backend)")
     end
-    
+
     return compute_puc_full(nodes; estimator = estimator, base = base, config = config)
 end
 
@@ -143,7 +160,6 @@ function get_weights(inference::Union{PIDCNetworkInference, CLRNetworkInference}
     end
 
     return weights
-
 end
 
 
@@ -159,6 +175,19 @@ Fields:
 struct InferredNetwork
     nodes::Array{Node}
     edges::Array{Edge}
+end
+
+function build_sorted_edges(nodes, weights)
+    number_of_nodes = length(nodes)
+    edges = Edge[]
+    sizehint!(edges, binomial(number_of_nodes, 2))
+    for i = 1:number_of_nodes
+        for j = (i+1):number_of_nodes
+            push!(edges, Edge((nodes[i], nodes[j]), weights[i, j]))
+        end
+    end
+    sort!(edges; by = get_weight, rev = true)
+    return edges
 end
 
 # Constructs an InferredNetwork given a network inference algorithm and an array of
@@ -183,9 +212,8 @@ function InferredNetwork(
 
     if get_puc(inference)
         # ===== PUC / PIDC branch =====
-        mi_scores, scores = get_puc_scores(
-            nodes, number_of_nodes, estimator, base; config = config
-        )
+        mi_scores, scores =
+            get_puc_scores(nodes, number_of_nodes, estimator, base; config = config)
 
         # Optional MI dump (PIDC only)
         if isa(inference, PIDCNetworkInference) && config.dump_mi_path !== nothing
@@ -208,29 +236,17 @@ function InferredNetwork(
             if config.verbose
                 println("[FastPIDC] Context weighting.")
             end
-            
+
             weights = get_weights(inference, scores, number_of_nodes, nodes)
         else
             weights = scores
         end
 
-        # Build full edge list
-        edges = Edge[]
-        sizehint!(edges, binomial(number_of_nodes, 2))
-        for i in 1:number_of_nodes
-            for j in i+1:number_of_nodes
-                push!(edges, Edge([nodes[i], nodes[j]], weights[i, j]))
-            end
-        end
-        sort!(edges; by = get_weight, rev = true)
-
-        return InferredNetwork(nodes, edges)
+        return InferredNetwork(nodes, build_sorted_edges(nodes, weights))
 
     else
         # ===== MI / CLR branch (no PUC) =====
-        scores = get_mi_scores(
-            nodes, number_of_nodes, estimator, base; config = config
-        )
+        scores = get_mi_scores(nodes, number_of_nodes, estimator, base; config = config)
 
         if apply_context(inference)
             weights = get_weights(inference, scores, number_of_nodes, nodes)
@@ -238,16 +254,6 @@ function InferredNetwork(
             weights = scores
         end
 
-        edges = Array{Edge}(undef, binomial(number_of_nodes, 2))
-        index = 0
-        for i in 1:number_of_nodes
-            for j in i+1:number_of_nodes
-                index += 1
-                edges[index] = Edge([nodes[i], nodes[j]], weights[i, j])
-            end
-        end
-        sort!(edges; by = get_weight, rev = true)
-
-        return InferredNetwork(nodes, edges)
+        return InferredNetwork(nodes, build_sorted_edges(nodes, weights))
     end
 end

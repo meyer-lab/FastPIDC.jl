@@ -26,7 +26,7 @@ function joint_counts_kernel_chunked!(data, counts, n, m, k_bins, z_start, z_chu
             counts[u, v, x, z_local] += Int32(1)
         end
     end
-    
+
     return nothing
 end
 
@@ -56,7 +56,7 @@ function mi_si_kernel_chunked!(counts, marginals, mi_matrix, si_matrix, n, m, k_
             
             c_uv = counts[u, v, x, z_local]
             p_uv = Float64(c_uv) * inv_m
-            
+
             if p_uv > 0.0
                 mi_val += p_uv * log2(p_uv / (p_x_u * p_z_v))
                 p_u_cond_v = p_uv / p_z_v
@@ -101,7 +101,7 @@ function puc_accumulation_kernel_chunked!(si_matrix, mi_matrix, puc_scores, marg
             
             redundancy += p_z_k * min(si_x, si_y)
         end
-        
+
         score = (mi_xz - redundancy) / mi_xz
         if isfinite(score) && score > 0.0
             local_puc += score
@@ -125,12 +125,12 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     # Prepare static data on CPU and move to GPU
     data_cpu = zeros(Int32, num_samples, num_nodes)
     marginals_cpu = zeros(Float64, k_bins, num_nodes)
-    for i in 1:num_nodes
+    for i = 1:num_nodes
         data_cpu[:, i] .= Int32.(nodes[i].binned_values)
         p = nodes[i].probabilities
         marginals_cpu[1:length(p), i] .= Float64.(p)
     end
-    
+
     data_gpu = CuArray(data_cpu)
     marginals_gpu = CuArray(marginals_cpu)
     
@@ -180,16 +180,16 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     # Copy results back
     puc_scores_cpu = Array(puc_scores_gpu)
     mi_matrix_cpu = Array(mi_matrix_gpu)
-    
+
     # Symmetrize PUC scores
-    for i in 1:num_nodes
-        for j in i+1:num_nodes
+    for i = 1:num_nodes
+        for j = (i+1):num_nodes
             val = puc_scores_cpu[i, j] + puc_scores_cpu[j, i]
             puc_scores_cpu[i, j] = val
             puc_scores_cpu[j, i] = val
         end
     end
-    
+
     return mi_matrix_cpu, puc_scores_cpu
 end
 

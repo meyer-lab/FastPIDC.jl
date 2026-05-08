@@ -49,7 +49,9 @@ function parse_delim(s::AbstractString)
     elseif ncodeunits(s) == 1
         return s[1]
     else
-        error("Unsupported --delim=\"$s\". Use one of: space, tab, comma, pipe, auto, or a single character.")
+        error(
+            "Unsupported --delim=\"$s\". Use one of: space, tab, comma, pipe, auto, or a single character.",
+        )
     end
 end
 
@@ -111,24 +113,24 @@ function main()
     end
 
     # ----------------- Required arguments -----------------
-    infile  = get(args, "infile",  nothing)
+    infile = get(args, "infile", nothing)
     outfile = get(args, "outfile", nothing)
 
-    infile === nothing  && error("Missing required argument --infile")
+    infile === nothing && error("Missing required argument --infile")
     outfile === nothing && error("Missing required argument --outfile")
-    
+
     output_format = Symbol(lowercase(get(args, "output-format", "tsv")))
     if !(output_format in (:tsv, :npy))
         error("Unsupported --output-format=$(output_format). Use 'tsv' or 'npy'.")
     end
 
     # ----------------- Legacy PIDC options ----------------
-    delim_str    = get(args, "delim", "space")
-    delim        = parse_delim(delim_str)
-    discretizer  = get(args, "discretizer", "bayesian_blocks")
-    estimator    = get(args, "estimator", "maximum_likelihood")
-    n_bins       = parse(Int, get(args, "n_bins", "10"))
-    base         = parse(Int, get(args, "base", "2"))
+    delim_str = get(args, "delim", "space")
+    delim = parse_delim(delim_str)
+    discretizer = get(args, "discretizer", "bayesian_blocks")
+    estimator = get(args, "estimator", "maximum_likelihood")
+    n_bins = parse(Int, get(args, "n_bins", "10"))
+    base = parse(Int, get(args, "base", "2"))
     verbose_flag = parse_bool(get(args, "verbose", "false"))
 
     # ----------------- Execution Environment ----------------
@@ -142,34 +144,38 @@ function main()
             Core.eval(Main, :(import CUDA))
             is_functional = Core.eval(Main, :(CUDA.functional()))
             if !is_functional
-                error("CUDA.jl is installed, but no functional GPU was detected. Try running with --backend cpu")
+                error(
+                    "CUDA.jl is installed, but no functional GPU was detected. Try running with --backend cpu",
+                )
             end
             @say "CUDA GPU detected successfully."
         catch e
             if isa(e, ErrorException)
                 rethrow(e)
             else
-                error("Failed to load CUDA.jl. Please ensure CUDA is installed in your Julia environment, or run with --backend cpu.")
+                error(
+                    "Failed to load CUDA.jl. Please ensure CUDA is installed in your Julia environment, or run with --backend cpu.",
+                )
             end
         end
     end
 
     # ----------------- Diagnostics ----------------
-    dump_mi_path      = haskey(args, "dump-mi-path") ? args["dump-mi-path"] : nothing
-    dump_mi_fraction  = parse(Float64, get(args, "dump-mi-fraction", "1.0"))
-    dump_puc_path     = haskey(args, "dump-puc-path") ? args["dump-puc-path"] : nothing
+    dump_mi_path = haskey(args, "dump-mi-path") ? args["dump-mi-path"] : nothing
+    dump_mi_fraction = parse(Float64, get(args, "dump-mi-fraction", "1.0"))
+    dump_puc_path = haskey(args, "dump-puc-path") ? args["dump-puc-path"] : nothing
     dump_puc_fraction = parse(Float64, get(args, "dump-puc-fraction", "1.0"))
 
     # ----------------- Build PIDCConfig ----------------
     cfg = PIDCConfig(
-        backend           = backend,
-        discretizer       = discretizer,
-        estimator         = estimator,
-        dump_mi_path      = dump_mi_path,
-        dump_mi_fraction  = dump_mi_fraction,
-        dump_puc_path     = dump_puc_path,
+        backend = backend,
+        discretizer = discretizer,
+        estimator = estimator,
+        dump_mi_path = dump_mi_path,
+        dump_mi_fraction = dump_mi_fraction,
+        dump_puc_path = dump_puc_path,
         dump_puc_fraction = dump_puc_fraction,
-        verbose           = verbose_flag
+        verbose = verbose_flag,
     )
 
     println(">>> FastPIDC run configuration")
@@ -183,9 +189,13 @@ function main()
     println("  base             = $base")
     println("  backend          = $(cfg.backend)")
     println("  JULIA_NUM_THREADS= $n_threads_act")
-    println("  dump_mi_path     = $(cfg.dump_mi_path === nothing ? "none" : cfg.dump_mi_path)")
+    println(
+        "  dump_mi_path     = $(cfg.dump_mi_path === nothing ? "none" : cfg.dump_mi_path)",
+    )
     println("  dump_mi_fraction = $(cfg.dump_mi_fraction)")
-    println("  dump_puc_path    = $(cfg.dump_puc_path === nothing ? "none" : cfg.dump_puc_path)")
+    println(
+        "  dump_puc_path    = $(cfg.dump_puc_path === nothing ? "none" : cfg.dump_puc_path)",
+    )
     println("  dump_puc_fraction= $(cfg.dump_puc_fraction)")
     println("  verbose          = $(cfg.verbose)")
     println()
@@ -198,14 +208,14 @@ function main()
     net = Base.invokelatest(infer_network,
         infile,
         PIDCNetworkInference();
-        delim         = delim,
-        discretizer   = discretizer,
-        estimator     = estimator,
-        number_of_bins= n_bins,
-        base          = base,
-        config        = cfg,
+        delim = delim,
+        discretizer = discretizer,
+        estimator = estimator,
+        number_of_bins = n_bins,
+        base = base,
+        config = cfg,
         out_file_path = outfile,
-        output_format = output_format
+        output_format = output_format,
     )
 
     @say "Wrote edges to $(outfile)"

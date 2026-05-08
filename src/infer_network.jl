@@ -20,18 +20,25 @@ Arguments:
 
 The "maximum_likelihood" estimator is recommended for PUC and PIDC.
 """
-function get_nodes(data_file_path::String; delim::Union{Char,Bool} = false, discretizer = "bayesian_blocks",
-    estimator = "maximum_likelihood", number_of_bins = 10)
+function get_nodes(
+    data_file_path::String;
+    delim::Union{Char,Bool} = false,
+    discretizer = "bayesian_blocks",
+    estimator = "maximum_likelihood",
+    number_of_bins = 10,
+)
 
-    if delim == false
-        lines = readdlm(open(data_file_path); skipstart = 1)
-    else
-        lines = readdlm(open(data_file_path), delim; skipstart = 1)
+    lines = open(data_file_path) do io
+        if delim == false
+            readdlm(io; skipstart = 1)
+        else
+            readdlm(io, delim; skipstart = 1)
+        end
     end
     number_of_nodes = size(lines, 1)
     nodes = Array{Node}(undef, number_of_nodes)
 
-    for i in 1:number_of_nodes
+    Threads.@threads for i = 1:number_of_nodes
         nodes[i] = Node(lines[i:i, 1:end], discretizer, estimator, number_of_bins)
     end
 
@@ -60,19 +67,13 @@ Arguments:
 """
 function write_network_file(file_path::String, inferred_network::InferredNetwork)
 
-    out_file = open(file_path, "w")
-
-    for edge in inferred_network.edges
-        nodes = edge.nodes
-        write(out_file, string(
-            nodes[1].label, "\t", nodes[2].label, "\t",
-            edge.weight, "\n",
-            nodes[2].label, "\t", nodes[1].label, "\t",
-            edge.weight, "\n"
-        ))
+    open(file_path, "w") do out_file
+        for edge in inferred_network.edges
+            nodes = edge.nodes
+            println(out_file, "$(nodes[1].label)\t$(nodes[2].label)\t$(edge.weight)")
+            println(out_file, "$(nodes[2].label)\t$(nodes[1].label)\t$(edge.weight)")
+        end
     end
-
-    close(out_file)
 
 end
 
@@ -161,7 +162,7 @@ function read_network_file(file_path::AbstractString)
     edges = []
     nodes = Set()
 
-    for i in 1:size(mat,1)
+    for i = 1:size(mat, 1)
         n1_label, n2_label, weight = mat[i, :]
         n1_label = string(n1_label)
         n2_label = string(n2_label)
@@ -188,25 +189,23 @@ Arguments:
 
 If `absolute` is false, threshold will be interpreted as the percentage of edges to keep.
 """
-function get_adjacency_matrix(inferred_network::InferredNetwork, threshold = 0.1; absolute = false)
+function get_adjacency_matrix(
+    inferred_network::InferredNetwork,
+    threshold = 0.1;
+    absolute = false,
+)
 
     number_of_nodes = length(inferred_network.nodes)
     adjacency_matrix = zeros(Bool, (number_of_nodes, number_of_nodes))
 
-    labels_to_ids = Dict{String,Int}()
-    ids_to_labels = Dict{Int,String}()
-    i = 1
-    for node in inferred_network.nodes
-        labels_to_ids[node.label] = i
-        ids_to_labels[i] = node.label
-        i += 1
-    end
+    labels_to_ids = Dict(node.label => i for (i, node) in enumerate(inferred_network.nodes))
+    ids_to_labels = Dict(i => node.label for (i, node) in enumerate(inferred_network.nodes))
 
-    number_of_edges = absolute ?
-        findfirst(x -> x.weight < threshold, inferred_network.edges) - 1 :
+    number_of_edges =
+        absolute ? findfirst(x -> x.weight < threshold, inferred_network.edges) - 1 :
         Int(round(length(inferred_network.edges) * threshold))
 
-    for edge in inferred_network.edges[1 : number_of_edges]
+    for edge in inferred_network.edges[1:number_of_edges]
         node1 = labels_to_ids[edge.nodes[1].label]
         node2 = labels_to_ids[edge.nodes[2].label]
         adjacency_matrix[node1, node2] = true
@@ -241,9 +240,18 @@ Arguments:
 
 The "maximum_likelihood" estimator is recommended for PUC and PIDC.
 """
-function infer_network(data_file_path::String, inference::AbstractNetworkInference; delim::Union{Char,Bool} = false,
-    discretizer = "bayesian_blocks", estimator = "maximum_likelihood", number_of_bins = 10, base = 2,
-    out_file_path = "", output_format::Symbol = :tsv, config::PIDCConfig = PIDCConfig())
+function infer_network(
+    data_file_path::String,
+    inference::AbstractNetworkInference;
+    delim::Union{Char,Bool} = false,
+    discretizer = "bayesian_blocks",
+    estimator = "maximum_likelihood",
+    number_of_bins = 10,
+    base = 2,
+    out_file_path = "",
+    output_format::Symbol = :tsv,
+    config::PIDCConfig = PIDCConfig(),
+)
 
     println("Getting nodes...")
     nodes = get_nodes(
@@ -251,11 +259,17 @@ function infer_network(data_file_path::String, inference::AbstractNetworkInferen
         delim = delim,
         discretizer = discretizer,
         estimator = estimator,
-        number_of_bins = number_of_bins
+        number_of_bins = number_of_bins,
     )
 
     println("Inferring network...")
-    inferred_network = InferredNetwork(inference, nodes, estimator = estimator, base = base, config = config)
+    inferred_network = InferredNetwork(
+        inference,
+        nodes,
+        estimator = estimator,
+        base = base,
+        config = config,
+    )
 
     if length(out_file_path) > 1
         println("Writing network to file...")

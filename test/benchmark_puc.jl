@@ -27,25 +27,33 @@ println("Loaded $num_nodes nodes.")
 
 # Warmup and Baseline (CPU - Distributed with 10 workers)
 println("\n--- CPU Distributed ($(nprocs()-1) workers) ---")
-config_cpu = PIDCConfig(backend=:cpu, verbose=false)
+config_cpu = PIDCConfig(backend = :cpu, verbose = false)
 # Warmup
-InferredNetwork(PUCNetworkInference(), nodes[1:min(100, num_nodes)], config=config_cpu)
-t_cpu = @elapsed InferredNetwork(PUCNetworkInference(), nodes, config=config_cpu)
+InferredNetwork(PUCNetworkInference(), nodes[1:min(100, num_nodes)], config = config_cpu)
+t_cpu = @elapsed InferredNetwork(PUCNetworkInference(), nodes, config = config_cpu)
 println("CPU Distributed time: $t_cpu seconds")
 
 # CUDA Backend
 println("\n--- CUDA GPU ---")
-config_cuda = PIDCConfig(backend=:cuda, verbose=false)
+config_cuda = PIDCConfig(backend = :cuda, verbose = false)
 # Warmup
-InferredNetwork(PUCNetworkInference(), nodes[1:min(100, num_nodes)], config=config_cuda)
+InferredNetwork(PUCNetworkInference(), nodes[1:min(100, num_nodes)], config = config_cuda)
 # Benchmark
-t_cuda = @elapsed InferredNetwork(PUCNetworkInference(), nodes, config=config_cuda)
+t_cuda = @elapsed InferredNetwork(PUCNetworkInference(), nodes, config = config_cuda)
 println("CUDA GPU time: $t_cuda seconds")
 
 # Correctness check
 println("\n--- Correctness Check ---")
-res_cpu = InferredNetwork(PUCNetworkInference(), nodes[1:min(100, num_nodes)], config=config_cpu)
-res_cuda = InferredNetwork(PUCNetworkInference(), nodes[1:min(100, num_nodes)], config=config_cuda)
+res_cpu = InferredNetwork(
+    PUCNetworkInference(),
+    nodes[1:min(100, num_nodes)],
+    config = config_cpu,
+)
+res_cuda = InferredNetwork(
+    PUCNetworkInference(),
+    nodes[1:min(100, num_nodes)],
+    config = config_cuda,
+)
 
 w_cpu = [e.weight for e in res_cpu.edges[1:10]]
 w_cuda = [e.weight for e in res_cuda.edges[1:10]]
@@ -53,7 +61,7 @@ println("Top 10 weights (CPU):  $w_cpu")
 println("Top 10 weights (CUDA): $w_cuda")
 
 max_diff = 0.0
-for i in 1:min(100, length(res_cpu.edges))
+for i = 1:min(100, length(res_cpu.edges))
     global max_diff = max(max_diff, abs(res_cpu.edges[i].weight - res_cuda.edges[i].weight))
 end
 println("Max difference in top 100 edges: $max_diff")

@@ -27,23 +27,37 @@ Base.@kwdef struct PIDCConfig
     dump_puc_fraction::Float64 = 1.0                # 0–1; 1.0 = all pairs
     verbose::Bool = false
     # Inner constructor for automatic validation
-    function PIDCConfig(backend, discretizer, estimator, 
-        dump_mi_path, dump_mi_fraction, dump_puc_path, 
-        dump_puc_fraction, verbose)
+    function PIDCConfig(
+        backend,
+        discretizer,
+        estimator,
+        dump_mi_path,
+        dump_mi_fraction,
+        dump_puc_path,
+        dump_puc_fraction,
+        verbose,
+    )
 
         if !(backend in (:cpu, :cuda))
-        throw(ArgumentError("backend must be :cpu or :cuda, got :$backend"))
+            throw(ArgumentError("backend must be :cpu or :cuda, got :$backend"))
         end
         if !(0.0 <= dump_mi_fraction <= 1.0)
-        throw(ArgumentError("dump_mi_fraction must be between 0.0 and 1.0"))
+            throw(ArgumentError("dump_mi_fraction must be between 0.0 and 1.0"))
         end
         if !(0.0 <= dump_puc_fraction <= 1.0)
-        throw(ArgumentError("dump_puc_fraction must be between 0.0 and 1.0"))
+            throw(ArgumentError("dump_puc_fraction must be between 0.0 and 1.0"))
         end
 
-        new(backend, discretizer, estimator, 
-        dump_mi_path, dump_mi_fraction, dump_puc_path, 
-        dump_puc_fraction, verbose)
+        new(
+            backend,
+            discretizer,
+            estimator,
+            dump_mi_path,
+            dump_mi_fraction,
+            dump_puc_path,
+            dump_puc_fraction,
+            verbose,
+        )
     end
 end
 
@@ -63,7 +77,10 @@ function Node(line::AbstractArray, discretizer, estimator, number_of_bins)
     # the same as the value passed in.
     number_of_bins = get_bin_ids!(raw_values, discretizer, number_of_bins, binned_values)
 
-    probabilities = get_probabilities(estimator, get_frequencies_from_bin_ids(binned_values, number_of_bins))
+    probabilities = get_probabilities(
+        estimator,
+        get_frequencies_from_bin_ids(binned_values, number_of_bins),
+    )
 
     return Node(label, binned_values, number_of_bins, probabilities)
 
@@ -74,20 +91,26 @@ end
 function get_mi_and_si(node1::Node, node2::Node, estimator, base)
     probabilities, probabilities1, probabilities2 =
         get_joint_probabilities(node1, node2, estimator)
-    mi  = apply_mutual_information_formula(probabilities,
-                            probabilities1,
-                            probabilities2,
-                            base)
-    si1 = apply_specific_information_formula(probabilities,
-                            probabilities1,
-                            probabilities2,
-                            1,
-                            base)
-    si2 = apply_specific_information_formula(probabilities,
-                            probabilities2,
-                            probabilities1,
-                            2,
-                            base)
+    mi = apply_mutual_information_formula(
+        probabilities,
+        probabilities1,
+        probabilities2,
+        base,
+    )
+    si1 = apply_specific_information_formula(
+        probabilities,
+        probabilities1,
+        probabilities2,
+        1,
+        base,
+    )
+    si2 = apply_specific_information_formula(
+        probabilities,
+        probabilities2,
+        probabilities1,
+        2,
+        base,
+    )
     return mi, si1, si2
 end
 
@@ -110,6 +133,6 @@ different scale. The relative weights within one inferred network are
 therefore more meaningful than the absolute weight out of context.
 """
 struct Edge
-    nodes::Array{Node}
+    nodes::Tuple{Node,Node}
     weight::Float64
 end

@@ -2,13 +2,13 @@ using Test
 using DelimitedFiles
 using FastPIDC
 const DATA_DIR = joinpath(dirname(@__FILE__), "data")
-const OUT_DIR  = joinpath(dirname(@__FILE__), "baseline_outputs")
+const OUT_DIR = joinpath(dirname(@__FILE__), "baseline_outputs")
 isdir(OUT_DIR) || mkpath(OUT_DIR)
 
 @testset "Diagnostic dumps for PIDC" begin
     data_file = joinpath(DATA_DIR, "toy_small_200.txt")
-    mi_file  = joinpath(OUT_DIR, "toy_mi_dump.tsv")
-    puc_file  = joinpath(OUT_DIR, "toy_puc_dump.tsv")
+    mi_file = joinpath(OUT_DIR, "toy_mi_dump.tsv")
+    puc_file = joinpath(OUT_DIR, "toy_puc_dump.tsv")
 
 
     # Clean up from previous runs
@@ -18,15 +18,15 @@ isdir(OUT_DIR) || mkpath(OUT_DIR)
 
     # Small k just to exercise pruned PIDC path
     cfg = PIDCConfig(
-        backend= :cpu,
+        backend = :cpu,
         dump_mi_path = mi_file,
         dump_mi_fraction = 0.1,   # top 10% MI pairs
-        dump_puc_path     = puc_file,
+        dump_puc_path = puc_file,
         dump_puc_fraction = 0.1,
     )
 
     nodes = get_nodes(data_file)
-    net   = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg)
+    net = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg)
 
     @test isfile(mi_file)
     @test isfile(puc_file)
