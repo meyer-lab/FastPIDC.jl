@@ -101,39 +101,61 @@ end
 
 
 # Applies context to the raw edge weights.
-function apply_clr_context(i, j, score, scores_i, scores_j, weights)
-    difference_i = score - mean(scores_i)
-    difference_j = score - mean(scores_j)
-    weights[i, j] = sqrt(
-        (var(scores_i) == 0 || difference_i < 0 ? 0 : difference_i^2 / var(scores_i)) +
-        (var(scores_j) == 0 || difference_j < 0 ? 0 : difference_j^2 / var(scores_j)),
-    )
-end
+function get_weights(inference::Union{PIDCNetworkInference, CLRNetworkInference}, scores, number_of_nodes, nodes)
 
-function compute_weight(::PIDCNetworkInference, i, j, scores, weights, nodes)
-    score = scores[i, j]
-    scores_i = vcat(scores[1:(i-1), i], scores[(i+1):end, i])
-    scores_j = vcat(scores[1:(j-1), j], scores[(j+1):end, j])
-    try
-        weights[i, j] = cdf(fit(Gamma, scores_i), score) + cdf(fit(Gamma, scores_j), score)
-    catch
-        apply_clr_context(i, j, score, scores_i, scores_j, weights)
+    # Pre-allocate parameter storage
+    use_gamma = falses(number_of_nodes)
+    gamma_alpha = zeros(Float64, number_of_nodes)
+    gamma_theta = zeros(Float64, number_of_nodes)
+    clr_mean = zeros(Float64, number_of_nodes)
+    clr_var = zeros(Float64, number_of_nodes)
+
+    # Pre-computation pass O(N) complexity
+    for i in 1:number_of_nodes
+        # Remove the diagonal element scores[i, i] (the self-score)
+        # Doing this vcat N times (instead of N^2 times)
+        scores_i = vcat(scores[1:i-1, i], scores[i+1:end, i])
+        
+        # Precompute CLR parameters for the fallback / pure CLR
+        clr_mean[i] = mean(scores_i)
+        clr_var[i] = var(scores_i)
+
+        if isa(inference, PIDCNetworkInference)
+            try
+                # Attempt Gamma MLE fit on the background scores
+                g = fit(Gamma, scores_i)
+                gamma_alpha[i] = shape(g)
+                gamma_theta[i] = scale(g)
+                use_gamma[i] = true
+            catch
+                use_gamma[i] = false
+            end
+        end
     end
-end
 
-function compute_weight(::CLRNetworkInference, i, j, scores, weights, nodes)
-    score = scores[i, j]
-    scores_i = vcat(scores[1:(i-1), i], scores[(i+1):end, i])
-    scores_j = vcat(scores[1:(j-1), j], scores[(j+1):end, j])
-    apply_clr_context(i, j, score, scores_i, scores_j, weights)
-end
-
-function get_weights(inference, scores, number_of_nodes, nodes)
     weights = SharedArray{Float64}(number_of_nodes, number_of_nodes)
 
-    @sync @distributed for i = 1:number_of_nodes
-        for j = (i+1):number_of_nodes
-            compute_weight(inference, i, j, scores, weights, nodes)
+    # Edge weighting pass: O(N^2) complexity, but on fast math operations
+    @sync @distributed for i in 1:number_of_nodes
+        for j in i+1:number_of_nodes
+            score = scores[i, j]
+            
+            # PIDC Logic: If Gamma succeeded for BOTH genes, use Gamma CDF sum
+            # (Matches original code: a try/catch on the sum forces a fallback if *either* fails)
+            if isa(inference, PIDCNetworkInference) && use_gamma[i] && use_gamma[j]
+                weights[i, j] = cdf(Gamma(gamma_alpha[i], gamma_theta[i]), score) + 
+                                cdf(Gamma(gamma_alpha[j], gamma_theta[j]), score)
+            
+            # Fallback / CLR Logic: If CLR inference, or if Gamma failed for either gene
+            else
+                diff_i = score - clr_mean[i]
+                diff_j = score - clr_mean[j]
+                
+                term_i = (clr_var[i] == 0 || diff_i < 0) ? 0.0 : (diff_i^2 / clr_var[i])
+                term_j = (clr_var[j] == 0 || diff_j < 0) ? 0.0 : (diff_j^2 / clr_var[j])
+                
+                weights[i, j] = sqrt(term_i + term_j)
+            end
         end
     end
 

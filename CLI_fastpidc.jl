@@ -204,7 +204,8 @@ function main()
     @say "Reading data from $infile ..."
     t_start = time()
 
-    net = infer_network(
+    # Ensuring Julia sees the CUDA extension methods loaded during main()
+    net = Base.invokelatest(infer_network,
         infile,
         PIDCNetworkInference();
         delim = delim,
