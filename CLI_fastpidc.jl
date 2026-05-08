@@ -6,7 +6,7 @@ using DelimitedFiles
 using FastPIDC
 using Distributed
 using SparseArrays
-using MatrixMarket
+using NPZ
 
 # ---------------- Logging helpers ----------------
 macro say(msg)
@@ -81,7 +81,7 @@ Basic options:
 
 Execution / Environment:
   --backend STR           'cuda' (default) or 'cpu'. 
-  --output-format STR     'tsv' (default) or Julia native sparse matrix 'mtx'
+  --output-format STR     'tsv' (default) or NumPy binary 'npy'
                           Note: To run on multiple CPU threads, use the Julia flag:
                           `julia -t auto command_line_fastpidc.jl ...`
 
@@ -120,8 +120,8 @@ function main()
     outfile === nothing && error("Missing required argument --outfile")
 
     output_format = Symbol(lowercase(get(args, "output-format", "tsv")))
-    if !(output_format in (:tsv, :mtx))
-        error("Unsupported --output-format=$(output_format). Use 'tsv' or 'mtx'.")
+    if !(output_format in (:tsv, :npy))
+        error("Unsupported --output-format=$(output_format). Use 'tsv' or 'npy'.")
     end
 
     # ----------------- Legacy PIDC options ----------------

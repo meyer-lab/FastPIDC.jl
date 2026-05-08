@@ -7,7 +7,7 @@ using Pkg
 using DelimitedFiles
 using SharedArrays
 using SparseArrays
-using MatrixMarket
+using NPZ
 
 export
     # Common types
@@ -23,7 +23,7 @@ export
     # Functions for inferring networks
     get_nodes,
     write_network_file,
-    write_network_mtx,
+    write_network_npy,
     read_network_file,
     get_adjacency_matrix,
     infer_network
