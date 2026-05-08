@@ -31,7 +31,7 @@ export
 include("common.jl")
 export PIDCConfig # New addition
 include("puc_full.jl")
-include("mi_dump.jl") 
+include("mi_dump.jl")
 include("puc_dump.jl")
 include("network_inference.jl")
 include("infer_network.jl")
@@ -40,11 +40,11 @@ include("empirical_bayes_glue.jl")
 
 # Optional exports
 if EB_EXISTS
-export
-    # Empirical Bayes glue functions
-    to_index,
-    make_priors,
-    empirical_bayes
+    export
+        # Empirical Bayes glue functions
+        to_index,
+        make_priors,
+        empirical_bayes
 end
 
 end # module
