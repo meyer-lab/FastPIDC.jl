@@ -30,10 +30,11 @@ data_file_path = joinpath(data_path, "yeast1_10_data.txt")
 nodes = get_nodes(data_file_path)
 
 println("Inferring networks...")
-mi_network = InferredNetwork(MINetworkInference(), nodes)
-clr_network = InferredNetwork(CLRNetworkInference(), nodes)
-puc_network = InferredNetwork(PUCNetworkInference(), nodes)
-pidc_network = InferredNetwork(PIDCNetworkInference(), nodes)
+cfg = PIDCConfig(backend = :cpu, verbose = false)
+mi_network = InferredNetwork(MINetworkInference(), nodes; config = cfg)
+clr_network = InferredNetwork(CLRNetworkInference(), nodes; config = cfg)
+puc_network = InferredNetwork(PUCNetworkInference(), nodes; config = cfg)
+pidc_network = InferredNetwork(PIDCNetworkInference(), nodes; config = cfg)
 
 # The benchmarks were inferred prior to the implementation of this package. MI, PUC and PIDC were
 # inferred using scripts based on InformationMeasures.jl and CLR was inferred using MINET:

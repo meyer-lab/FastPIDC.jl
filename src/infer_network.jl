@@ -1,5 +1,99 @@
 # Helper functions for inferring a network from a data file
 
+# Entry point: checks extension and routes to the right loader
+function get_nodes(
+    data_file_path::String;
+    delim::Union{Char,Bool} = false,
+    discretizer = "bayesian_blocks",
+    estimator = "maximum_likelihood",
+    number_of_bins = 10,
+)
+    if endswith(data_file_path, ".h5")
+        return get_nodes_h5(data_file_path; discretizer, estimator, number_of_bins)
+    else
+        return get_nodes_text(data_file_path; delim, discretizer, estimator, number_of_bins)
+    end
+end
+
+# --- HDF5 Loader ---
+function get_nodes_h5(
+    data_file_path::String;
+    discretizer = "bayesian_blocks",
+    estimator = "maximum_likelihood",
+    number_of_bins = 10,
+)
+    nodes = Node[]
+    
+    h5open(data_file_path, "r") do f
+        if !haskey(f, "gene_names")
+            throw(ArgumentError("Invalid HDF5 schema in $(data_file_path). Missing required dataset: 'gene_names'"))
+        end
+        gene_names = String.(read(f["gene_names"]))
+        number_of_nodes = length(gene_names)
+        
+        matrix_key = ""
+        for key in ["matrix_sparse_csc", "matrix_dense", "X", "matrix", "data"]
+            if haskey(f, key)
+                matrix_key = key
+                break
+            end
+        end
+        
+        if matrix_key == ""
+            throw(ArgumentError("Could not find expression data. Expected key 'X' or similar."))
+        end
+        
+        data_obj = f[matrix_key]
+        
+        # Determine Dense vs Sparse dynamically
+        if isa(data_obj, HDF5.Group)
+            if !all(k -> haskey(data_obj, k), ["data", "indices", "indptr", "shape"])
+                throw(ArgumentError("Sparse matrix group '$matrix_key' is missing required components."))
+            end
+            
+            shape = tuple(read_attribute(data_obj, "shape")...)
+            
+            # Since Python saved a (Cells, Genes) CSC matrix, we can feed the 
+            # 1-indexed components directly into Julia. The resulting matrix 
+            # will be structurally identical: (Cells, Genes)
+            X_raw = SparseMatrixCSC(
+                shape[1], shape[2], 
+                read(data_obj["indptr"]) .+ 1, 
+                read(data_obj["indices"]) .+ 1, 
+                read(data_obj["data"])
+            )
+            number_of_cells = size(X_raw, 1)
+            
+        elseif isa(data_obj, HDF5.Dataset)
+            # Python saved (Cells, Genes) C-Order. Julia reads (Genes, Cells).
+            # We permute dimensions to make it (Cells, Genes) so our slicing logic is uniform.
+            X_raw = permutedims(read(data_obj))
+            number_of_cells = size(X_raw, 1)
+        else
+            throw(ArgumentError("Object at '$matrix_key' is neither an HDF5 Group nor a Dataset."))
+        end
+        
+        # Build the Nodes
+        nodes = Array{Node}(undef, number_of_nodes)
+        Threads.@threads for i = 1:number_of_nodes
+            label = gene_names[i]
+            
+            # Since X_raw is (Cells, Genes), Column `i` is Gene `i`
+            data_gene = @view X_raw[:, i] 
+            
+            legacy_format = Matrix{Any}(undef, 1, number_of_cells + 1)
+            legacy_format[1, 1] = label
+            legacy_format[1, 2:end] .= data_gene
+            
+            nodes[i] = Node(legacy_format, discretizer, estimator, number_of_bins)
+        end
+    end
+    
+    return nodes
+end
+
+# --- Legacy text Loader (Preserved for backwards compatibility) ---
+
 """
     get_nodes(data_file_path::String; <keyword arguments>)
 
@@ -20,14 +114,13 @@ Arguments:
 
 The "maximum_likelihood" estimator is recommended for PUC and PIDC.
 """
-function get_nodes(
+function get_nodes_text(
     data_file_path::String;
     delim::Union{Char,Bool} = false,
     discretizer = "bayesian_blocks",
     estimator = "maximum_likelihood",
     number_of_bins = 10,
 )
-
     lines = open(data_file_path) do io
         if delim == false
             readdlm(io; skipstart = 1)
@@ -35,16 +128,18 @@ function get_nodes(
             readdlm(io, delim; skipstart = 1)
         end
     end
+    
     number_of_nodes = size(lines, 1)
     nodes = Array{Node}(undef, number_of_nodes)
 
     Threads.@threads for i = 1:number_of_nodes
+        # Note: lines[i:i, 1:end] is a memory trap; it allocates a new matrix for every gene.
         nodes[i] = Node(lines[i:i, 1:end], discretizer, estimator, number_of_bins)
     end
 
     return nodes
-
 end
+
 
 """
     write_network_file(file_path::String, inferred_network::InferredNetwork)
@@ -168,7 +263,7 @@ function read_network_file(file_path::AbstractString)
         n2_label = string(n2_label)
         n1 = Node(n1_label, [], 0, [])
         n2 = Node(n2_label, [], 0, [])
-        new_edge = Edge([n1, n2], weight)
+        new_edge = Edge((n1, n2), weight)
         push!(edges, new_edge)
         push!(nodes, n1_label, n2_label)
     end

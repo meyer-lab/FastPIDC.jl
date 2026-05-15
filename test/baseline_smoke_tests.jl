@@ -57,6 +57,37 @@ end
     end
 end
 
+@testset "I/O Parity: Legacy TXT vs HDF5" begin
+    txt_path = joinpath(DATA_DIR, "toy_small_200.txt")
+    h5_path  = joinpath(DATA_DIR, "toy_small_200.h5")
+    
+    # Load nodes using both methods
+    nodes_txt = get_nodes(txt_path)
+    nodes_h5  = get_nodes(h5_path)
+    
+    # Assert the same number of nodes/genes were loaded
+    @test length(nodes_txt) == length(nodes_h5)
+    
+    # Assert every single node matches perfectly
+    for i in 1:length(nodes_txt)
+        node_t = nodes_txt[i]
+        node_h = nodes_h5[i]
+        
+        # Verify gene labels match exactly
+        @test node_t.label == node_h.label
+
+        # HDF5 should preserve floats perfectly.
+        if hasproperty(node_t, :probabilities)
+            @test isapprox(node_t.probabilities, node_h.probabilities, atol=1e-8)
+        else
+            # Fallback if probabilities aren't directly exposed
+            # Replace with the relevant data field in your Node struct
+            # @test isapprox(node_t.data, node_h.data, atol=1e-8)
+            println("failed")
+        end
+    end
+end
+
 @testset "Toy dataset writes TSV and NPY consistently" begin
     function count_nonzero_entries_from_tsv(path::String)
         mat = readdlm(path, '\t')

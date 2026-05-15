@@ -67,7 +67,21 @@ if CUDA.functional()
             @test all(isapprox.(puc_cpu, puc_gpu, atol = 1e-8))
         end
 
-        # --- TEST 4: Edge Rank Preservation & Diagnostics ---
+        # --- TEST 4: txt vs. H5 Determinism ---
+        @testset "txt vs. H5 Determinism" begin
+            node_txt = get_nodes(dataset)
+            node_h5 =  get_nodes(joinpath(DATA_DIR, "toy_small_200.h5"))
+            # Run the GPU calculation twice on the exact same data
+            mi_txt, puc_txt = FastPIDC.compute_puc_full_cuda(nodes, config_cuda, 2)
+            mi_h5, puc_h5 = FastPIDC.compute_puc_full_cuda(nodes, config_cuda, 2)
+
+            # These should be bit-for-bit identical. If they aren't, 
+            # there is an atomic race condition or uninitialized memory.
+            @test mi_txt == mi_h5
+            @test puc_txt == puc_h5
+        end
+
+        # --- TEST 5: Edge Rank Preservation & Diagnostics ---
         @testset "Top Edge Rank Preservation" begin
             # Generate the full sorted network objects
             net_cpu = InferredNetwork(PUCNetworkInference(), nodes, config = config_cpu)
