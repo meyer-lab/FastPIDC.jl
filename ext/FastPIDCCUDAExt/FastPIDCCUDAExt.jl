@@ -92,6 +92,26 @@ end
 
 # --- Host implementation ---
 
+"""
+    _MAX_K_BINS
+
+Largest bins-per-gene the shared kernels can index. They compute every flat
+buffer offset in 64-bit, with one exception: `joint_counts_kernel` forms the
+bin-pair index `u * k_bins + v` in Int32, which stays exact only while
+`k_bins^2` fits in Int32 (isqrt(typemax(Int32)) == 46340).
+"""
+const _MAX_K_BINS = 46340
+
+function _check_kernel_index_limits(k_bins::Integer)
+    k_bins <= _MAX_K_BINS || error(
+        "compute_puc_full_cuda: the discretizer selected k_bins=$k_bins bins " *
+        "per gene, but the CUDA kernels index bin pairs in 32-bit and support " *
+        "at most $(_MAX_K_BINS). Use discretizer=\"uniform_width\" with a " *
+        "fixed, small number_of_bins, or config.backend = :cpu.",
+    )
+    return nothing
+end
+
 function _smallest_unsigned_type(max_value::Integer)
     max_value >= 0 || throw(ArgumentError("max_value must be nonnegative"))
 
@@ -122,7 +142,12 @@ resulting PUC matrix before returning both matrices to the CPU.
 `config.verbose` enables progress printouts; `base` is currently unused
 (mutual information is always computed in base 2 on the GPU, matching the
 kernel source). Raises an `ErrorException` with a suggested remedy if even
-a single-gene chunk would not fit in the currently-free GPU memory.
+a single-gene chunk would not fit in the currently-free GPU memory, or if
+the discretizer selected more than `_MAX_K_BINS` bins per gene.
+
+The chunked intermediates legitimately exceed 2^31 elements on large gene
+sets - `counts` alone is `k_bins^2 * num_nodes * chunk_size` - so the shared
+kernels index them in 64-bit (see the indexing contract in the kernel source).
 
 Device buffers use Julia's column-major layout with dimensions reversed
 relative to the kernel source's documented (row-major) shapes - e.g. a
@@ -140,6 +165,7 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     num_nodes = length(nodes)
     num_samples = length(nodes[1].binned_values)
     k_bins = maximum(n -> n.number_of_bins, nodes)
+    _check_kernel_index_limits(k_bins)
 
     # Prepare static data on CPU and move to GPU. The shared CUDA C kernels use
     # 0-indexed Int32 bin ids; FastPIDC.jl's bin ids are 1-indexed, so shift
@@ -163,6 +189,11 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     # joint counts and k_bins * num_nodes * chunk_size for specific information.
     # Size the target-gene chunk from currently-free memory rather than always
     # allocating a fixed 256-gene chunk.
+    #
+    # This bounds MEMORY AVAILABILITY only - it is not, and must not be turned
+    # back into, a bound on the flat element index. The kernels index these
+    # buffers in 64-bit precisely so the chunk can be sized from free memory
+    # without an int32 element-count cap.
     bytes_per_chunk_col =
         k_bins^2 * num_nodes * sizeof(Int32) +  # counts_chunk_gpu
         k_bins * num_nodes * sizeof(Float64)    # si_chunk_gpu

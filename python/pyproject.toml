@@ -27,7 +27,11 @@ artifacts = ["src/fastpidc/kernels/*.cu"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["julia: cross-validates against a freshly run FastPIDC.jl (requires julia on PATH)"]
+markers = [
+    "julia: cross-validates against a freshly run FastPIDC.jl (requires julia on PATH)",
+    "largemem: allocates >8 GiB of GPU memory to exercise flat indices past 2^31 (deselected by default; run with -m largemem on an idle GPU)",
+]
+addopts = "-m 'not largemem'"
 
 [tool.ruff]
 line-length = 120

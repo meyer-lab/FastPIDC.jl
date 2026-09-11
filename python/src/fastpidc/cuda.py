@@ -9,6 +9,10 @@ and a functional GPU.
 Genes are processed along the target ("z") axis in chunks sized to fit the
 currently free device memory, mirroring
 ``FastPIDCCUDAExt.compute_puc_full_cuda`` in FastPIDC.jl.
+
+Those chunked buffers legitimately exceed 2^31 elements on large gene sets
+(``counts`` alone is ``k_bins**2 * n * chunk_size``), so the shared kernels
+index them in 64-bit; see the indexing contract in the kernel source.
 """
 
 from __future__ import annotations
@@ -26,6 +30,10 @@ __all__ = ["compute_puc_full_cuda", "cuda_available", "solve_bayesian_blocks_cud
 
 _KERNEL_SOURCE_PATH = Path(__file__).with_name("kernels") / "pidc_kernels.cu"
 _MAX_CHUNK_SIZE = 256
+# Largest bins-per-gene the shared kernels can index: joint_counts_kernel forms
+# the bin-pair index u * k_bins + v in int32, so k_bins**2 must fit there
+# (isqrt(2**31 - 1) == 46340). Every other flat offset is 64-bit.
+_MAX_K_BINS = 46340
 # Headroom for the fixed buffers, allocator overhead and fragmentation, matching
 # the safety factor used by FastPIDC.jl's CUDA extension.
 _CHUNK_MEMORY_SAFETY_FACTOR = 0.8
@@ -74,6 +82,24 @@ def _load_module():
     return cp.RawModule(code=source, options=("--std=c++11",))
 
 
+def _check_kernel_index_limits(k_bins: int) -> None:
+    """Validate the one kernel limit that is not lifted by 64-bit indexing.
+
+    The shared kernels compute every flat buffer offset in 64-bit, with a single
+    exception: ``joint_counts_kernel`` forms the bin-pair index
+    ``u * k_bins + v`` in ``int``, which is exact only while ``k_bins**2`` fits
+    in int32. FastPIDC.jl's ``_check_kernel_index_limits`` enforces the same
+    bound.
+    """
+    if k_bins > _MAX_K_BINS:
+        raise RuntimeError(
+            f"compute_puc_full_cuda: the discretizer selected k_bins={k_bins} bins per "
+            f"gene, but the CUDA kernels index bin pairs in 32-bit and support at most "
+            f'{_MAX_K_BINS}. Use discretizer="uniform_width" with a fixed, small '
+            f"number_of_bins, or config.backend = 'cpu'."
+        )
+
+
 def _chunk_size_for_free_memory(n: int, k_bins: int, free_bytes: int) -> int:
     """Largest target-gene chunk whose intermediate buffers fit in
     ``free_bytes`` of device memory, capped at :data:`_MAX_CHUNK_SIZE`.
@@ -82,6 +108,10 @@ def _chunk_size_for_free_memory(n: int, k_bins: int, free_bytes: int) -> int:
     ``k_bins * n`` (specific information) per target gene, so an adaptive
     discretizer that picks many bins can make even one gene per chunk too
     large; that case raises instead of failing inside the allocator.
+
+    This bounds *memory availability* only - it is deliberately not a bound on
+    the flat element index. The kernels index these buffers in 64-bit precisely
+    so the chunk can be sized from free memory without an int32 element cap.
     """
     bytes_per_chunk_column = k_bins**2 * n * np.dtype(np.int32).itemsize + k_bins * n * np.dtype(np.float64).itemsize
     usable_bytes = free_bytes * _CHUNK_MEMORY_SAFETY_FACTOR
@@ -131,6 +161,9 @@ def compute_puc_full_cuda(
     n = len(nodes)
     m = nodes[0].binned_values.size
     k_bins = max(node.number_of_bins for node in nodes)
+    # Checked here rather than in _chunk_size_for_free_memory, which is skipped
+    # entirely when the caller passes an explicit chunk_size.
+    _check_kernel_index_limits(k_bins)
 
     if chunk_size is None:
         chunk_size = _chunk_size_for_free_memory(n, k_bins, int(cp.cuda.runtime.memGetInfo()[0]))

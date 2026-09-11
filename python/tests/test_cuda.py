@@ -15,11 +15,13 @@ import pytest
 
 from fastpidc.cuda import (
     _MAX_CHUNK_SIZE,
+    _MAX_K_BINS,
     _bb_kernel_name,
     _bb_memory_batches,
     _bb_problem_bytes,
     _bb_quantile_buckets,
     _bb_threads_for_max_u,
+    _check_kernel_index_limits,
     _chunk_size_for_free_memory,
     _smallest_unsigned_dtype,
     cuda_available,
@@ -297,3 +299,104 @@ def test_bayesian_blocks_falls_back_to_cpu_without_a_gpu(monkeypatch, julia_test
     cpu_nodes = get_nodes(path, bb_backend="cpu")
     for from_fallback, from_cpu in zip(fallback_nodes, cpu_nodes):
         np.testing.assert_array_equal(from_fallback.binned_values, from_cpu.binned_values)
+
+
+# --- Flat index range: the >2^31 regression ---------------------------------
+#
+# A 12,071-gene x 38,176-cell production run crashed with
+# CUDA_ERROR_ILLEGAL_ADDRESS because the shared kernels computed the `counts`
+# index in 32-bit: k_bins^2 * n * chunk_size = 33^2 * 12071 * 256 is
+# 3,365,201,664 elements, whose top index wraps past INT32_MAX. All flat offsets
+# are 64-bit now; these tests pin that.
+
+INT32_MAX = 2**31 - 1
+
+# n=64 genes at 725 bins with a 64-gene chunk is the cheapest configuration that
+# clears 2^31 counts elements: 8.02 GiB, versus ~22 MiB of everything else.
+_OVERFLOW_N_NODES = 64
+_OVERFLOW_N_SAMPLES = 2000
+_OVERFLOW_N_BINS = 725
+_OVERFLOW_CHUNK = 64
+# A chunk small enough that the same problem stays provably inside int32,
+# giving a control the overflow cannot have touched.
+_CONTROL_CHUNK = 32
+# The overflowing chunk needs ~8 GiB plus room for cupy's pool and the other
+# buffers; require real headroom so the test never competes for a full device.
+_OVERFLOW_FREE_MEMORY_FLOOR = 12 * GIB
+
+
+def _counts_elements(k_bins: int, n: int, chunk: int) -> int:
+    """Element count of the per-chunk joint-count buffer the kernels index."""
+    return k_bins**2 * n * chunk
+
+
+def test_production_configuration_exceeds_int32_indexing():
+    # Documents why the kernels must index in 64-bit, and pins the arithmetic
+    # that the large-memory test below relies on. No GPU needed.
+    assert _counts_elements(k_bins=33, n=12071, chunk=256) - 1 > INT32_MAX
+    assert _counts_elements(_OVERFLOW_N_BINS, _OVERFLOW_N_NODES, _OVERFLOW_CHUNK) - 1 > INT32_MAX
+    assert _counts_elements(_OVERFLOW_N_BINS, _OVERFLOW_N_NODES, _CONTROL_CHUNK) - 1 <= INT32_MAX
+
+
+def test_check_kernel_index_limits_accepts_the_largest_supported_k_bins():
+    _check_kernel_index_limits(_MAX_K_BINS)
+    assert _MAX_K_BINS**2 <= INT32_MAX
+    assert (_MAX_K_BINS + 1) ** 2 > INT32_MAX
+
+
+def test_check_kernel_index_limits_rejects_a_larger_k_bins():
+    # joint_counts_kernel forms u * k_bins + v in int32; everything else is 64-bit.
+    with pytest.raises(RuntimeError, match="bin pairs in 32-bit"):
+        _check_kernel_index_limits(_MAX_K_BINS + 1)
+
+
+def test_chunk_sizing_is_not_capped_by_int32_element_count():
+    # The memory guard bounds bytes, not the element index. Regression guard
+    # against anyone "fixing" the overflow by reimposing an int32 element cap,
+    # which would silently shrink chunks on large GPUs.
+    chunk = _chunk_size_for_free_memory(n=12071, k_bins=33, free_bytes=int(19.22 * GIB))
+    assert chunk == 256
+    assert _counts_elements(33, 12071, chunk) - 1 > INT32_MAX
+
+
+@pytest.mark.largemem
+def test_puc_indexing_past_int32_matches_a_smaller_chunk():
+    """Drive the PUC kernels past 2^31 counts elements and require the result to
+    match a chunking that stays inside int32.
+
+    Same kernels, same nodes, two buffer layouts: only the flat offsets differ,
+    so any 32-bit truncation shows up as a mismatch (before the fix it faulted
+    outright with CUDA_ERROR_ILLEGAL_ADDRESS).
+    """
+    if not cuda_available():
+        pytest.skip("no functional GPU / cupy backend available")
+
+    import cupy as cp
+
+    from fastpidc.cuda import compute_puc_full_cuda
+
+    free_bytes = int(cp.cuda.runtime.memGetInfo()[0])
+    if free_bytes < _OVERFLOW_FREE_MEMORY_FLOOR:
+        pytest.skip(
+            f"needs {_OVERFLOW_FREE_MEMORY_FLOOR / GIB:.0f} GiB free device memory, have {free_bytes / GIB:.1f} GiB"
+        )
+
+    rng = np.random.default_rng(0)
+    values = rng.random((_OVERFLOW_N_SAMPLES, _OVERFLOW_N_NODES))
+    nodes = [
+        Node.from_raw_values(f"N{i}", values[:, i], "uniform_width", "maximum_likelihood", _OVERFLOW_N_BINS)
+        for i in range(_OVERFLOW_N_NODES)
+    ]
+    k_bins = max(node.number_of_bins for node in nodes)
+
+    # Fail loudly rather than pass vacuously if the configuration drifts below
+    # the threshold this test exists to cross.
+    assert _counts_elements(k_bins, len(nodes), _OVERFLOW_CHUNK) - 1 > INT32_MAX
+
+    overflow_mi, overflow_puc = compute_puc_full_cuda(nodes, chunk_size=_OVERFLOW_CHUNK)
+    control_mi, control_puc = compute_puc_full_cuda(nodes, chunk_size=_CONTROL_CHUNK)
+
+    np.testing.assert_array_equal(overflow_mi, control_mi)
+    np.testing.assert_array_equal(overflow_puc, control_puc)
+    assert np.all(np.isfinite(overflow_mi))
+    assert np.all(overflow_puc >= 0)
