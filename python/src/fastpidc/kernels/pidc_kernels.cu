@@ -38,9 +38,9 @@
 // faulted with CUDA_ERROR_ILLEGAL_ADDRESS. Every composed flat offset below is
 // therefore `long long`, hoisted out of the hot loops as a base offset plus a
 // loop-invariant stride so the inner bodies cost 64-bit adds rather than 32-bit
-// multiply-add chains. The single exception is the bin-pair index
-// `u * k_bins + v` in joint_counts_kernel, which stays 32-bit and so requires
-// k_bins <= 46340; both hosts check that before launching.
+// multiply-add chains. The bin-pair term `u * k_bins + v` is widened before
+// multiplication as well, so no composed flat-buffer offset relies on 32-bit
+// arithmetic.
 
 extern "C" {
 
@@ -76,10 +76,10 @@ __global__ void joint_counts_kernel(
         int u = data[data_row + x];
         int v = data[data_row + z_global];
         if (u >= 0 && u < k_bins && v >= 0 && v < k_bins) {
-            // u, v < k_bins was just checked, so u * k_bins + v < k_bins^2, which
-            // both hosts keep inside int (k_bins <= 46340); plane_stride carries
-            // the 64-bit range.
-            long long idx = (long long)(u * k_bins + v) * plane_stride + cell;
+            // Widen before forming the bin-pair index: k_bins is an int32
+            // launch scalar, but k_bins^2 need not fit in int32.
+            const long long bin_pair = (long long)u * k_bins + v;
+            long long idx = bin_pair * plane_stride + cell;
             atomicAdd(&counts[idx], 1);
         }
     }
@@ -321,16 +321,20 @@ __device__ void fastpidc_bayesian_blocks_dp(
         double local_best = fastpidc_negative_infinity();
         int local_i = FASTPIDC_BB_NO_CANDIDATE;
 
-        for (int i = tid; i <= k; i += nthreads) {
+        // Use a 64-bit loop cursor so the final `i += nthreads` cannot wrap if
+        // n_unique approaches the signed-int32 ABI ceiling. Candidate values
+        // themselves are still <= INT32_MAX and are narrowed only after checking.
+        for (long long i64 = tid; i64 <= (long long)k; i64 += nthreads) {
+            const int i = (int)i64;
             const double prefix_before =
-                (i == 0) ? 0.0 : (double)prefix_counts[state_start + i - 1];
+                (i == 0) ? 0.0 : (double)prefix_counts[state_start + i64 - 1];
             const double count = prefix_k - prefix_before;
-            const double width = block_lengths[block_start + i] - block_length_end;
+            const double width = block_lengths[block_start + i64] - block_length_end;
 
             // Fitness function (eq. 19) and prior (eq. 21) from Scargle 2012.
             double fit = count * log(count / width) - prior;
             if (i > 0) {
-                fit += best[state_start + i - 1];
+                fit += best[state_start + i64 - 1];
             }
 
             if (fastpidc_bb_take_other(fit, i, local_best, local_i)) {

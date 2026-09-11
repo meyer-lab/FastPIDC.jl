@@ -14,15 +14,17 @@ import numpy as np
 import pytest
 
 from fastpidc.cuda import (
+    _KERNEL_INT_MAX,
     _MAX_CHUNK_SIZE,
-    _MAX_K_BINS,
     _bb_kernel_name,
     _bb_memory_batches,
     _bb_problem_bytes,
     _bb_quantile_buckets,
     _bb_threads_for_max_u,
-    _check_kernel_index_limits,
-    _chunk_size_for_free_memory,
+    _check_kernel_scalar_limits,
+    _gpu_memory_budget_bytes,
+    _puc_memory_plan,
+    _reusable_gpu_memory_bytes,
     _smallest_unsigned_dtype,
     cuda_available,
 )
@@ -58,27 +60,64 @@ def test_cuda_available_returns_a_bool():
     assert isinstance(cuda_available(), bool)
 
 
+def test_gpu_memory_budget_is_65_percent_of_currently_free_memory():
+    assert _gpu_memory_budget_bytes(1000) == 650
+
+
+def test_reusable_gpu_memory_includes_cached_pool_blocks():
+    assert _reusable_gpu_memory_bytes(1000, 400, pool_used_bytes=250) == 1400
+
+
+def test_reusable_gpu_memory_honors_a_cupy_pool_limit():
+    # The pool can reuse its free blocks and grow only until the configured
+    # limit. Here the physical device would allow 1400 bytes, but the pool has
+    # only 650 bytes of headroom from its current live usage.
+    assert (
+        _reusable_gpu_memory_bytes(1000, 400, pool_used_bytes=250, pool_limit_bytes=900)
+        == 650
+    )
+
+
+def test_puc_memory_plan_counts_fixed_and_chunk_buffers_exactly():
+    n, m, k_bins = 3, 5, 7
+    _, fixed_bytes, bytes_per_chunk_column, _ = _puc_memory_plan(
+        n=n, m=m, k_bins=k_bins, free_bytes=64 * GIB
+    )
+    assert fixed_bytes == n * m * 4 + n * k_bins * 8 + 2 * n * n * 8
+    assert bytes_per_chunk_column == k_bins * k_bins * n * 4 + k_bins * n * 8
+
+
 def test_chunk_size_is_capped_by_the_maximum():
-    # Plenty of memory for a small problem: the fixed cap applies.
-    assert _chunk_size_for_free_memory(n=1000, k_bins=4, free_bytes=64 * GIB) == _MAX_CHUNK_SIZE
+    chunk, _, _, _ = _puc_memory_plan(n=1000, m=1000, k_bins=4, free_bytes=64 * GIB)
+    assert chunk == _MAX_CHUNK_SIZE
 
 
 def test_chunk_size_never_exceeds_the_number_of_genes():
-    assert _chunk_size_for_free_memory(n=10, k_bins=4, free_bytes=64 * GIB) == 10
+    chunk, _, _, _ = _puc_memory_plan(n=10, m=1000, k_bins=4, free_bytes=64 * GIB)
+    assert chunk == 10
 
 
 def test_chunk_size_shrinks_when_memory_is_tight():
-    tight = _chunk_size_for_free_memory(n=5000, k_bins=64, free_bytes=8 * GIB)
-    roomy = _chunk_size_for_free_memory(n=5000, k_bins=64, free_bytes=64 * GIB)
+    tight, _, _, _ = _puc_memory_plan(n=5000, m=1000, k_bins=64, free_bytes=8 * GIB)
+    roomy, _, _, _ = _puc_memory_plan(n=5000, m=1000, k_bins=64, free_bytes=64 * GIB)
     assert 1 <= tight < roomy <= _MAX_CHUNK_SIZE
 
 
-def test_chunk_size_raises_when_a_single_gene_chunk_does_not_fit():
-    # An adaptive discretizer choosing thousands of bins makes the per-target
-    # intermediates exceed device memory; that must be an explicit error rather
-    # than an allocator failure deep inside the kernel launch loop.
-    with pytest.raises(RuntimeError, match="single-gene chunk"):
-        _chunk_size_for_free_memory(n=20000, k_bins=4000, free_bytes=8 * GIB)
+def test_memory_plan_raises_before_allocating_when_one_gene_chunk_does_not_fit():
+    with pytest.raises(RuntimeError, match="one-gene chunk"):
+        _puc_memory_plan(n=20000, m=1000, k_bins=4000, free_bytes=8 * GIB)
+
+
+def test_explicit_chunk_size_must_fit_the_same_memory_budget():
+    safe, _, _, _ = _puc_memory_plan(n=5000, m=1000, k_bins=64, free_bytes=8 * GIB)
+    with pytest.raises(RuntimeError, match="requested chunk_size"):
+        _puc_memory_plan(
+            n=5000,
+            m=1000,
+            k_bins=64,
+            free_bytes=8 * GIB,
+            requested_chunk_size=safe + 1,
+        )
 
 
 @pytest.mark.skipif(not cuda_available(), reason="no functional GPU / cupy backend available")
@@ -170,7 +209,9 @@ def test_bb_quantile_buckets_of_empty_input():
 def test_bb_problem_bytes_counts_every_device_buffer():
     problem = _bb_problems(sizes=(40,))[0]
     u = problem.prefix_counts.size
-    expected = 8 * (u + 1) + 1 * u + 8 * u + 1 * u  # lengths + prefix + best + back-pointers
+    expected = (
+        8 * (u + 1) + 1 * u + 8 * u + 1 * u + 8 + 8 + 4 + 8
+    )  # state arrays + per-gene metadata
     assert _bb_problem_bytes(problem, np.dtype(np.uint8), np.dtype(np.uint8)) == expected
 
 
@@ -322,7 +363,7 @@ _OVERFLOW_CHUNK = 64
 _CONTROL_CHUNK = 32
 # The overflowing chunk needs ~8 GiB plus room for cupy's pool and the other
 # buffers; require real headroom so the test never competes for a full device.
-_OVERFLOW_FREE_MEMORY_FLOOR = 12 * GIB
+_OVERFLOW_FREE_MEMORY_FLOOR = 14 * GIB
 
 
 def _counts_elements(k_bins: int, n: int, chunk: int) -> int:
@@ -338,25 +379,39 @@ def test_production_configuration_exceeds_int32_indexing():
     assert _counts_elements(_OVERFLOW_N_BINS, _OVERFLOW_N_NODES, _CONTROL_CHUNK) - 1 <= INT32_MAX
 
 
-def test_check_kernel_index_limits_accepts_the_largest_supported_k_bins():
-    _check_kernel_index_limits(_MAX_K_BINS)
-    assert _MAX_K_BINS**2 <= INT32_MAX
-    assert (_MAX_K_BINS + 1) ** 2 > INT32_MAX
+def test_kernel_scalar_limits_allow_bin_pair_products_past_int32():
+    # k_bins itself fits int32; k_bins**2 deliberately does not. The shared
+    # kernel widens u before multiplying by k_bins, so this is now valid
+    # indexing arithmetic (memory availability is a separate concern).
+    _check_kernel_scalar_limits(12_071, 38_176, 50_000)
+    assert 50_000**2 > INT32_MAX
 
 
-def test_check_kernel_index_limits_rejects_a_larger_k_bins():
-    # joint_counts_kernel forms u * k_bins + v in int32; everything else is 64-bit.
-    with pytest.raises(RuntimeError, match="bin pairs in 32-bit"):
-        _check_kernel_index_limits(_MAX_K_BINS + 1)
+@pytest.mark.parametrize(
+    ("n", "m", "k_bins"),
+    [
+        (_KERNEL_INT_MAX + 1, 1, 1),
+        (1, _KERNEL_INT_MAX + 1, 1),
+        (1, 1, _KERNEL_INT_MAX + 1),
+    ],
+)
+def test_kernel_scalar_limits_reject_values_that_would_narrow(n, m, k_bins):
+    with pytest.raises(ValueError, match="signed 32-bit scalar limit"):
+        _check_kernel_scalar_limits(n, m, k_bins)
 
 
 def test_chunk_sizing_is_not_capped_by_int32_element_count():
-    # The memory guard bounds bytes, not the element index. Regression guard
-    # against anyone "fixing" the overflow by reimposing an int32 element cap,
-    # which would silently shrink chunks on large GPUs.
-    chunk = _chunk_size_for_free_memory(n=12071, k_bins=33, free_bytes=int(19.22 * GIB))
+    # Memory, not int32 indexing, controls the chunk. With enough free VRAM the
+    # production-sized shape still reaches the 256-gene cap even though the
+    # joint-count buffer contains >2^31 elements.
+    chunk, _, _, _ = _puc_memory_plan(
+        n=12_071,
+        m=38_176,
+        k_bins=33,
+        free_bytes=32 * GIB,
+    )
     assert chunk == 256
-    assert _counts_elements(33, 12071, chunk) - 1 > INT32_MAX
+    assert _counts_elements(33, 12_071, chunk) - 1 > INT32_MAX
 
 
 @pytest.mark.largemem
@@ -373,9 +428,9 @@ def test_puc_indexing_past_int32_matches_a_smaller_chunk():
 
     import cupy as cp
 
-    from fastpidc.cuda import compute_puc_full_cuda
+    from fastpidc.cuda import _available_gpu_memory_bytes, compute_puc_full_cuda
 
-    free_bytes = int(cp.cuda.runtime.memGetInfo()[0])
+    free_bytes = _available_gpu_memory_bytes(cp)
     if free_bytes < _OVERFLOW_FREE_MEMORY_FLOOR:
         pytest.skip(
             f"needs {_OVERFLOW_FREE_MEMORY_FLOOR / GIB:.0f} GiB free device memory, have {free_bytes / GIB:.1f} GiB"

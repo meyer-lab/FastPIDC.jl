@@ -92,24 +92,122 @@ end
 
 # --- Host implementation ---
 
-"""
-    _MAX_K_BINS
+const _KERNEL_INT_MAX = typemax(Int32)
+const _GPU_MEMORY_BUDGET_NUMERATOR = 65
+const _GPU_MEMORY_BUDGET_DENOMINATOR = 100
+const _MAX_CHUNK_SIZE = 256
 
-Largest bins-per-gene the shared kernels can index. They compute every flat
-buffer offset in 64-bit, with one exception: `joint_counts_kernel` forms the
-bin-pair index `u * k_bins + v` in Int32, which stays exact only while
-`k_bins^2` fits in Int32 (isqrt(typemax(Int32)) == 46340).
-"""
-const _MAX_K_BINS = 46340
-
-function _check_kernel_index_limits(k_bins::Integer)
-    k_bins <= _MAX_K_BINS || error(
-        "compute_puc_full_cuda: the discretizer selected k_bins=$k_bins bins " *
-        "per gene, but the CUDA kernels index bin pairs in 32-bit and support " *
-        "at most $(_MAX_K_BINS). Use discretizer=\"uniform_width\" with a " *
-        "fixed, small number_of_bins, or config.backend = :cpu.",
+function _gpu_memory_budget_bytes(free_bytes::Integer)
+    free_bytes > 0 || throw(ArgumentError("free_bytes must be positive"))
+    return Int(
+        div(
+            big(free_bytes) * _GPU_MEMORY_BUDGET_NUMERATOR,
+            _GPU_MEMORY_BUDGET_DENOMINATOR,
+        ),
     )
+end
+
+function _reusable_gpu_memory_bytes(
+    driver_free_bytes::Integer,
+    pool_cached_bytes::Integer = 0,
+    pool_used_bytes::Integer = 0,
+)
+    driver_free_bytes >= 0 || throw(ArgumentError("driver_free_bytes must be nonnegative"))
+    pool_cached_bytes >= 0 || throw(ArgumentError("pool_cached_bytes must be nonnegative"))
+    pool_used_bytes >= 0 || throw(ArgumentError("pool_used_bytes must be nonnegative"))
+    pool_used_bytes <= pool_cached_bytes || throw(
+        ArgumentError("pool_used_bytes cannot exceed pool_cached_bytes"),
+    )
+
+    # CUDA.free_memory() reports memory still free at the driver level. CUDA.jl's
+    # stream-ordered pool may additionally hold reserved-but-unused bytes that are
+    # immediately reusable by this process, so include those in the planning view.
+    return Int(big(driver_free_bytes) + big(pool_cached_bytes - pool_used_bytes))
+end
+
+function _available_gpu_memory_bytes()
+    driver_free_bytes = Int(CUDA.free_memory())
+
+    # CUDA.jl 5.4+ exposes pool accounting helpers. On allocators/devices that do
+    # not use the stream-ordered pool they return `missing`, in which case driver
+    # free memory is already the only reusable pool we can account for.
+    cached = CUDA.cached_memory()
+    used = CUDA.used_memory()
+    if cached isa Integer && used isa Integer
+        return _reusable_gpu_memory_bytes(driver_free_bytes, Int(cached), Int(used))
+    end
+    return driver_free_bytes
+end
+
+"""
+    _check_kernel_scalar_limits(num_nodes, num_samples, k_bins)
+
+The shared CUDA kernels receive launch dimensions as signed 32-bit integers.
+All composed flat-buffer offsets are 64-bit, but these scalar dimensions must
+still fit exactly in `Int32` before crossing the host/device boundary.
+"""
+function _check_kernel_scalar_limits(
+    num_nodes::Integer,
+    num_samples::Integer,
+    k_bins::Integer,
+)
+    for (name, value) in (
+        ("num_nodes", num_nodes),
+        ("num_samples", num_samples),
+        ("k_bins", k_bins),
+    )
+        value >= 1 || throw(ArgumentError("$name must be positive; got $value"))
+        value <= _KERNEL_INT_MAX || throw(
+            ArgumentError(
+                "compute_puc_full_cuda: $name=$value exceeds the CUDA kernel's " *
+                "signed 32-bit scalar limit of $(_KERNEL_INT_MAX).",
+            ),
+        )
+    end
     return nothing
+end
+
+function _puc_memory_plan(
+    num_nodes::Integer,
+    num_samples::Integer,
+    k_bins::Integer,
+    free_bytes::Integer,
+)
+    # Use BigInt for the planning arithmetic so an impossible input cannot
+    # overflow on the host while we are trying to decide whether it fits.
+    n = big(num_nodes)
+    m = big(num_samples)
+    k = big(k_bins)
+    budget_bytes = big(_gpu_memory_budget_bytes(free_bytes))
+
+    fixed_bytes =
+        n * m * sizeof(Int32) +       # discretized data
+        n * k * sizeof(Float64) +     # marginals
+        2 * n * n * sizeof(Float64)  # MI + PUC output matrices
+    bytes_per_chunk_col =
+        k * k * n * sizeof(Int32) +  # joint counts
+        k * n * sizeof(Float64)      # specific information
+
+    minimum_bytes = fixed_bytes + bytes_per_chunk_col
+    minimum_bytes <= budget_bytes || error(
+        "compute_puc_full_cuda: the fixed GPU buffers plus a one-gene chunk " *
+        "would require $(round(Float64(minimum_bytes) / 2^30, digits = 2)) GiB, " *
+        "which exceeds the configured 65% memory budget " *
+        "($(round(Float64(budget_bytes) / 2^30, digits = 2)) GiB of " *
+        "$(round(free_bytes / 2^30, digits = 2)) GiB currently reusable). " *
+        "Reduce the number of genes/samples/bins, use a fixed small-bin " *
+        "discretizer, or use config.backend = :cpu.",
+    )
+
+    max_chunk_size = div(budget_bytes - fixed_bytes, bytes_per_chunk_col)
+    chunk_size = min(max_chunk_size, big(_MAX_CHUNK_SIZE), n)
+
+    return (
+        chunk_size = Int(chunk_size),
+        fixed_bytes = Int(fixed_bytes),
+        bytes_per_chunk_col = Int(bytes_per_chunk_col),
+        budget_bytes = Int(budget_bytes),
+    )
 end
 
 function _smallest_unsigned_type(max_value::Integer)
@@ -130,24 +228,22 @@ end
     FastPIDC.compute_puc_full_cuda(nodes, config, base) -> (mi_scores, puc_scores)
 
 GPU implementation of [`FastPIDC.compute_puc_full`](@ref): computes the full
-pairwise MI matrix and pre-context PUC matrix for `nodes` on the GPU,
-processing genes along the target (`z`) axis in chunks (up to 256 genes at
-a time) sized to fit the GPU memory currently free, to bound device memory
-use even when the discretizer has picked a large number of bins (see the
-chunk-sizing comment in the implementation). Moves discretized data and
-marginal probabilities to the GPU once, then for each chunk launches the
-shared `joint_counts_kernel`, `mi_si_kernel` and `puc_accumulation_kernel`
-(see the `FastPIDCCUDAExt` module docstring) in sequence, symmetrizing the
-resulting PUC matrix before returning both matrices to the CPU.
-`config.verbose` enables progress printouts; `base` is currently unused
-(mutual information is always computed in base 2 on the GPU, matching the
-kernel source). Raises an `ErrorException` with a suggested remedy if even
-a single-gene chunk would not fit in the currently-free GPU memory, or if
-the discretizer selected more than `_MAX_K_BINS` bins per gene.
+pairwise MI matrix and pre-context PUC matrix for `nodes` on the GPU.
+Before allocating device buffers it plans the complete footprint - fixed data,
+marginals and output matrices plus chunked intermediates - against 65% of the
+memory currently reusable by the process (driver-free plus unused CUDA.jl pool
+blocks). The target (`z`) chunk is capped at 256 genes and shrunk
+as needed, leaving 35% headroom for allocator fragmentation, CUDA/runtime
+workspaces and concurrent users. If the fixed buffers plus a one-gene chunk do
+not fit that budget, the function raises a descriptive error before allocating
+the large device arrays.
 
-The chunked intermediates legitimately exceed 2^31 elements on large gene
-sets - `counts` alone is `k_bins^2 * num_nodes * chunk_size` - so the shared
-kernels index them in 64-bit (see the indexing contract in the kernel source).
+All composed flat-buffer offsets in the shared CUDA kernels are 64-bit,
+including the bin-pair term. The scalar launch dimensions remain signed
+32-bit for ABI compatibility and are validated on the host before conversion.
+`config.verbose` prints the memory plan; `base` is currently unused (mutual
+information is always computed in base 2 on the GPU, matching the kernel
+source).
 
 Device buffers use Julia's column-major layout with dimensions reversed
 relative to the kernel source's documented (row-major) shapes - e.g. a
@@ -157,6 +253,10 @@ with manual pointer arithmetic is identical in both languages, with no
 transposition needed at the call boundary.
 """
 function FastPIDC.compute_puc_full_cuda(nodes, config, base)
+    isempty(nodes) && throw(ArgumentError("compute_puc_full_cuda requires at least one node"))
+
+    # Compile/load the module before measuring free memory so its device-side
+    # footprint is already reflected in the runtime memory budget.
     md = _get_module()
     joint_counts_kernel = CuFunction(md, "joint_counts_kernel")
     mi_si_kernel = CuFunction(md, "mi_si_kernel")
@@ -164,138 +264,160 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
 
     num_nodes = length(nodes)
     num_samples = length(nodes[1].binned_values)
+    all(n -> length(n.binned_values) == num_samples, nodes) || throw(
+        ArgumentError("all nodes must contain the same number of discretized samples"),
+    )
     k_bins = maximum(n -> n.number_of_bins, nodes)
-    _check_kernel_index_limits(k_bins)
+    _check_kernel_scalar_limits(num_nodes, num_samples, k_bins)
 
-    # Prepare static data on CPU and move to GPU. The shared CUDA C kernels use
-    # 0-indexed Int32 bin ids; FastPIDC.jl's bin ids are 1-indexed, so shift
-    # them down at this boundary.
+    # Plan the *entire* device footprint before allocating anything. The budget
+    # is 65% of currently reusable VRAM (driver-free plus unused CUDA.jl pool
+    # blocks), leaving 35% for allocator fragmentation,
+    # runtime/library workspaces, and other users/processes on a shared GPU.
+    free_bytes = _available_gpu_memory_bytes()
+    memory_plan = _puc_memory_plan(num_nodes, num_samples, k_bins, free_bytes)
+    chunk_size = memory_plan.chunk_size
+
+    # Prepare static data on CPU. The shared CUDA C kernels use 0-indexed Int32
+    # bin ids; FastPIDC.jl's bin ids are 1-indexed, so shift them down at this
+    # boundary.
     data_cpu = zeros(Int32, num_nodes, num_samples)          # kernel shape (m, n), reversed
     marginals_cpu = zeros(Float64, num_nodes, k_bins)       # kernel shape (k_bins, n), reversed
     for i = 1:num_nodes
-        data_cpu[i, :] .= Int32.(nodes[i].binned_values) .- Int32(1)
-        p = nodes[i].probabilities
+        node = nodes[i]
+        node.number_of_bins >= 1 || throw(
+            ArgumentError("node $(node.label) has non-positive number_of_bins"),
+        )
+        maximum(node.binned_values) <= node.number_of_bins || throw(
+            ArgumentError("node $(node.label) contains a bin id above number_of_bins"),
+        )
+        minimum(node.binned_values) >= 1 || throw(
+            ArgumentError("node $(node.label) contains a bin id below 1"),
+        )
+
+        data_cpu[i, :] .= Int32.(node.binned_values) .- Int32(1)
+        p = node.probabilities
+        length(p) <= k_bins || throw(
+            ArgumentError("node $(node.label) has more probabilities than k_bins"),
+        )
         marginals_cpu[i, 1:length(p)] .= Float64.(p)
     end
 
-    data_gpu = CuArray(data_cpu)
-    marginals_gpu = CuArray(marginals_cpu)
+    data_gpu = nothing
+    marginals_gpu = nothing
+    puc_scores_gpu = nothing
+    mi_matrix_gpu = nothing
+    counts_chunk_gpu = nothing
+    si_chunk_gpu = nothing
 
-    # Global output matrices (kernel shape (n, n); square, so no reversal needed).
-    puc_scores_gpu = CUDA.zeros(Float64, num_nodes, num_nodes)
-    mi_matrix_gpu = CUDA.zeros(Float64, num_nodes, num_nodes)
+    try
+        data_gpu = CuArray(data_cpu)
+        marginals_gpu = CuArray(marginals_cpu)
 
-    # Chunked intermediates scale with k_bins^2 * num_nodes * chunk_size for
-    # joint counts and k_bins * num_nodes * chunk_size for specific information.
-    # Size the target-gene chunk from currently-free memory rather than always
-    # allocating a fixed 256-gene chunk.
-    #
-    # This bounds MEMORY AVAILABILITY only - it is not, and must not be turned
-    # back into, a bound on the flat element index. The kernels index these
-    # buffers in 64-bit precisely so the chunk can be sized from free memory
-    # without an int32 element-count cap.
-    bytes_per_chunk_col =
-        k_bins^2 * num_nodes * sizeof(Int32) +  # counts_chunk_gpu
-        k_bins * num_nodes * sizeof(Float64)    # si_chunk_gpu
-    free_bytes = Int(CUDA.free_memory())
-    safety_factor = 0.8  # headroom for fixed buffers + allocator overhead/fragmentation
-    max_chunk_size = floor(Int, free_bytes * safety_factor / bytes_per_chunk_col)
-    chunk_size = clamp(max_chunk_size, 1, min(256, num_nodes))
+        # Global output matrices (kernel shape (n, n); square, so no reversal needed).
+        puc_scores_gpu = CUDA.zeros(Float64, num_nodes, num_nodes)
+        mi_matrix_gpu = CUDA.zeros(Float64, num_nodes, num_nodes)
 
-    if max_chunk_size < 1
-        error(
-            "compute_puc_full_cuda: even a single-gene chunk would require " *
-            "$(round(bytes_per_chunk_col / 2^30, digits = 2)) GiB of GPU memory " *
-            "(only $(round(free_bytes * safety_factor / 2^30, digits = 2)) GiB " *
-            "usable), because the discretizer selected k_bins=$k_bins bins per " *
-            "gene. This is usually caused by an adaptive discretizer (e.g. " *
-            "\"bayesian_blocks\", the default) picking an unbounded number of " *
-            "bins on a dataset with many samples. Try discretizer=\"uniform_width\" " *
-            "with a fixed, small number_of_bins (e.g. 10-20), or config.backend = :cpu.",
+        # Chunked intermediate buffers, pre-allocated once. Dimensions are
+        # reversed to preserve the row-major flat layout expected by CUDA C.
+        counts_chunk_gpu = CUDA.zeros(Int32, chunk_size, num_nodes, k_bins, k_bins)
+        si_chunk_gpu = CUDA.zeros(Float64, chunk_size, num_nodes, k_bins)
+
+        if config.verbose
+            println(
+                "[FastPIDC] GPU Chunked PUC: Processing $num_nodes x $num_nodes pairs " *
+                "(k_bins=$k_bins)...",
+            )
+            println(
+                "[FastPIDC] GPU memory: $(round(free_bytes / 2^30, digits = 2)) GiB reusable; " *
+                "65% budget=$(round(memory_plan.budget_bytes / 2^30, digits = 2)) GiB; " *
+                "fixed=$(round(memory_plan.fixed_bytes / 2^30, digits = 2)) GiB",
+            )
+            println(
+                "[FastPIDC] Using chunk size of $chunk_size " *
+                "(approx. $(ceil(Int, num_nodes / chunk_size)) iterations)",
+            )
+        end
+
+        threads = (16, 16)
+
+        # Iterate over the Z-axis in chunks. The shared kernels use 0-based target
+        # indices, so convert z_start at the call boundary.
+        for z_start_1 in 1:chunk_size:num_nodes
+            z_start = z_start_1 - 1
+            z_end = min(z_start_1 + chunk_size - 1, num_nodes)
+            z_curr_chunk_size = z_end - z_start_1 + 1
+
+            CUDA.fill!(counts_chunk_gpu, Int32(0))
+            CUDA.fill!(si_chunk_gpu, Float64(0))
+
+            blocks = (cld(num_nodes, 16), cld(z_curr_chunk_size, 16))
+
+            cudacall(
+                joint_counts_kernel,
+                (CuPtr{Cint}, CuPtr{Cint}, Cint, Cint, Cint, Cint, Cint),
+                data_gpu, counts_chunk_gpu,
+                Cint(num_nodes), Cint(num_samples), Cint(k_bins),
+                Cint(z_start), Cint(z_curr_chunk_size);
+                blocks=blocks, threads=threads,
+            )
+
+            cudacall(
+                mi_si_kernel,
+                (
+                    CuPtr{Cint}, CuPtr{Cdouble}, CuPtr{Cdouble}, CuPtr{Cdouble},
+                    Cint, Cint, Cint, Cint, Cint,
+                ),
+                counts_chunk_gpu, marginals_gpu, mi_matrix_gpu, si_chunk_gpu,
+                Cint(num_nodes), Cint(num_samples), Cint(k_bins),
+                Cint(z_start), Cint(z_curr_chunk_size);
+                blocks=blocks, threads=threads,
+            )
+
+            cudacall(
+                puc_accumulation_kernel,
+                (
+                    CuPtr{Cdouble}, CuPtr{Cdouble}, CuPtr{Cdouble}, CuPtr{Cdouble},
+                    Cint, Cint, Cint, Cint,
+                ),
+                si_chunk_gpu, mi_matrix_gpu, puc_scores_gpu, marginals_gpu,
+                Cint(num_nodes), Cint(k_bins),
+                Cint(z_start), Cint(z_curr_chunk_size);
+                blocks=blocks, threads=threads,
+            )
+        end
+
+        # Kernels write row-major (x, z) into Julia arrays whose dimensions are
+        # reversed above, so transpose the square outputs back to Julia's convention.
+        mi_matrix_cpu = permutedims(Array(mi_matrix_gpu))
+        puc_scores_cpu = permutedims(Array(puc_scores_gpu))
+
+        # Symmetrize PUC scores: each ordered pair contains one directional
+        # contribution from the shared kernel.
+        for i = 1:num_nodes
+            for j = (i+1):num_nodes
+                val = puc_scores_cpu[i, j] + puc_scores_cpu[j, i]
+                puc_scores_cpu[i, j] = val
+                puc_scores_cpu[j, i] = val
+            end
+        end
+
+        return mi_matrix_cpu, puc_scores_cpu
+    finally
+        # Return allocations to CUDA.jl's pool immediately, including on a kernel
+        # error. This prevents a failed or repeated run from retaining pressure
+        # until Julia's GC notices the arrays.
+        for array in (
+            counts_chunk_gpu,
+            si_chunk_gpu,
+            puc_scores_gpu,
+            mi_matrix_gpu,
+            marginals_gpu,
+            data_gpu,
         )
-    end
-
-    # Chunked intermediate buffers (pre-allocated once), with dimensions
-    # reversed to preserve the row-major flat layout expected by the CUDA C kernels.
-    counts_chunk_gpu = CUDA.zeros(Int32, chunk_size, num_nodes, k_bins, k_bins)
-    si_chunk_gpu = CUDA.zeros(Float64, chunk_size, num_nodes, k_bins)
-
-    if config.verbose
-        println(
-            "[FastPIDC] GPU Chunked PUC: Processing $num_nodes x $num_nodes pairs " *
-            "(k_bins=$k_bins)...",
-        )
-        println(
-            "[FastPIDC] Using chunk size of $chunk_size " *
-            "(approx. $(ceil(Int, num_nodes / chunk_size)) iterations), " *
-            "sized to fit $(round(free_bytes / 2^30, digits = 2)) GiB free GPU memory",
-        )
-    end
-
-    threads = (16, 16)
-
-    # Iterate over the Z-axis in chunks. The shared kernels use 0-based target
-    # indices, so convert z_start at the call boundary.
-    for z_start_1 in 1:chunk_size:num_nodes
-        z_start = z_start_1 - 1
-        z_end = min(z_start_1 + chunk_size - 1, num_nodes)
-        z_curr_chunk_size = z_end - z_start_1 + 1
-
-        CUDA.fill!(counts_chunk_gpu, Int32(0))
-        CUDA.fill!(si_chunk_gpu, Float64(0))
-
-        blocks = (cld(num_nodes, 16), cld(z_curr_chunk_size, 16))
-
-        cudacall(
-            joint_counts_kernel,
-            (CuPtr{Cint}, CuPtr{Cint}, Cint, Cint, Cint, Cint, Cint),
-            data_gpu, counts_chunk_gpu,
-            Cint(num_nodes), Cint(num_samples), Cint(k_bins),
-            Cint(z_start), Cint(z_curr_chunk_size);
-            blocks=blocks, threads=threads,
-        )
-
-        cudacall(
-            mi_si_kernel,
-            (
-                CuPtr{Cint}, CuPtr{Cdouble}, CuPtr{Cdouble}, CuPtr{Cdouble},
-                Cint, Cint, Cint, Cint, Cint,
-            ),
-            counts_chunk_gpu, marginals_gpu, mi_matrix_gpu, si_chunk_gpu,
-            Cint(num_nodes), Cint(num_samples), Cint(k_bins),
-            Cint(z_start), Cint(z_curr_chunk_size);
-            blocks=blocks, threads=threads,
-        )
-
-        cudacall(
-            puc_accumulation_kernel,
-            (
-                CuPtr{Cdouble}, CuPtr{Cdouble}, CuPtr{Cdouble}, CuPtr{Cdouble},
-                Cint, Cint, Cint, Cint,
-            ),
-            si_chunk_gpu, mi_matrix_gpu, puc_scores_gpu, marginals_gpu,
-            Cint(num_nodes), Cint(k_bins),
-            Cint(z_start), Cint(z_curr_chunk_size);
-            blocks=blocks, threads=threads,
-        )
-    end
-
-    # Kernels write row-major (x, z) into a Julia array whose dimensions were
-    # reversed above, so transpose the square outputs back to Julia's convention.
-    mi_matrix_cpu = permutedims(Array(mi_matrix_gpu))
-    puc_scores_cpu = permutedims(Array(puc_scores_gpu))
-
-    # Symmetrize PUC scores: each ordered pair contains one directional
-    # contribution from the shared kernel.
-    for i = 1:num_nodes
-        for j = (i+1):num_nodes
-            val = puc_scores_cpu[i, j] + puc_scores_cpu[j, i]
-            puc_scores_cpu[i, j] = val
-            puc_scores_cpu[j, i] = val
+            array === nothing || CUDA.unsafe_free!(array)
         end
     end
-
-    return mi_matrix_cpu, puc_scores_cpu
 end
 
 # --- Bayesian-block CUDA backend -------------------------------------------
@@ -392,7 +514,11 @@ function _bb_problem_bytes(
         sizeof(Float64) * (u + 1) + # block lengths
         sizeof(CountT) * u +        # prefix counts
         sizeof(Float64) * u +       # best scores
-        sizeof(IndexT) * u          # back-pointers
+        sizeof(IndexT) * u +        # back-pointers
+        sizeof(Int64) +             # state offset
+        sizeof(Int64) +             # block offset
+        sizeof(Int32) +             # unique count
+        sizeof(Float64)             # final score
     )
 end
 
@@ -518,6 +644,12 @@ function _solve_bb_cuda_batch_with_priors(
             "from 32, 64, 128, or 256; got $threads",
         ),
     )
+    length(problem_indices) <= _KERNEL_INT_MAX || throw(
+        ArgumentError(
+            "CUDA Bayesian blocks batch has $(length(problem_indices)) genes, " *
+            "which exceeds the signed 32-bit block-index limit.",
+        ),
+    )
 
     prefix_counts, block_lengths, state_offsets, block_offsets, unique_counts =
         _flatten_bb_batch(problems, problem_indices, CountT)
@@ -613,8 +745,18 @@ function FastPIDC.solve_bayesian_blocks_cuda(
     CUDA.functional() || return nothing
     isempty(problems) && return FastPIDC.BayesianBlocksSolution[]
 
+    # Load the module before measuring reusable memory so kernel/module residency
+    # is already reflected in the driver's and CUDA.jl pool's accounting.
+    _get_module()
+
     sample_count = maximum(p -> Int(round(p.prefix_counts[end])), problems)
     max_u = maximum(p -> length(p.prefix_counts), problems)
+    max_u <= _KERNEL_INT_MAX || throw(
+        ArgumentError(
+            "Bayesian blocks CUDA backend supports at most $(_KERNEL_INT_MAX) " *
+            "unique values per gene; got $max_u",
+        ),
+    )
 
     # A cumulative prefix count can reach the number of cells, so select the
     # smallest exact unsigned type that guards against overflow for this input.
@@ -622,14 +764,13 @@ function FastPIDC.solve_bayesian_blocks_cuda(
     # Back-pointers only need to represent candidate indices up to U_g.
     IndexT = _smallest_unsigned_type(max_u)
 
-    free_bytes = Int(CUDA.free_memory())
-    # Keep headroom for the CUDA context, allocator bookkeeping, and other
-    # active package allocations while still using most of the currently free
-    # device memory.
-    budget_bytes = max(1, floor(Int, 0.65 * Float64(free_bytes)))
-
     buckets = _bb_quantile_buckets(problems)
     solutions = Vector{FastPIDC.BayesianBlocksSolution}(undef, length(problems))
+
+    # The priors remain live across all batches. Allocate them first, then size
+    # each bucket from the *remaining* reusable memory at runtime. Every batch is
+    # kept within 65% of what is free at that moment, and _bb_problem_bytes
+    # includes all per-gene device metadata, not just the large state arrays.
     priors_gpu = CuArray(_bb_prior_values(max_u))
 
     if verbose
@@ -640,16 +781,15 @@ function FastPIDC.solve_bayesian_blocks_cuda(
             "U_g median=$median_u, max=$(unique_counts[end]), " *
             "prefix counts=$(CountT), back-pointers=$(IndexT)",
         )
-        println(
-            "[FastPIDC] CUDA Bayesian blocks memory budget: " *
-            "$(round(budget_bytes / 2.0^30; digits = 2)) GiB",
-        )
     end
 
     try
         for (bucket_number, bucket) in enumerate(buckets)
             bucket_max_u = maximum(i -> length(problems[i].prefix_counts), bucket)
             threads = _bb_threads_for_max_u(bucket_max_u)
+
+            free_bytes = _available_gpu_memory_bytes()
+            budget_bytes = _gpu_memory_budget_bytes(free_bytes)
             batches = _bb_memory_batches(
                 bucket,
                 problems,
@@ -663,7 +803,9 @@ function FastPIDC.solve_bayesian_blocks_cuda(
                 println(
                     "[FastPIDC] CUDA BB bucket $bucket_number/$(length(buckets)): " *
                     "$(length(bucket)) genes, U_g=$bucket_min_u:$bucket_max_u, " *
-                    "threads=$threads, batches=$(length(batches))",
+                    "threads=$threads, batches=$(length(batches)), " *
+                    "reusable=$(round(free_bytes / 2.0^30; digits = 2)) GiB, " *
+                    "65% budget=$(round(budget_bytes / 2.0^30; digits = 2)) GiB",
                 )
             end
 

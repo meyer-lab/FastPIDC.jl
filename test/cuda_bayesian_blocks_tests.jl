@@ -196,6 +196,12 @@ if CUDA.functional()
             end
         end
 
+        @testset "GPU memory accounting" begin
+            @test cuda_ext._gpu_memory_budget_bytes(1000) == 650
+            @test cuda_ext._reusable_gpu_memory_bytes(1000, 400, 250) == 1150
+            @test_throws ArgumentError cuda_ext._reusable_gpu_memory_bytes(100, 50, 51)
+        end
+
         @testset "Lightweight U_g bucketing and batching" begin
             buckets = cuda_ext._bb_quantile_buckets(problems)
             @test sort(vcat(buckets...)) == collect(eachindex(problems))
@@ -212,7 +218,11 @@ if CUDA.functional()
                 sizeof(Float64) * (u + 1) +
                 sizeof(UInt8) * u +
                 sizeof(Float64) * u +
-                sizeof(UInt8) * u
+                sizeof(UInt8) * u +
+                sizeof(Int64) +
+                sizeof(Int64) +
+                sizeof(Int32) +
+                sizeof(Float64)
             @test cuda_ext._bb_problem_bytes(problems[1], UInt8, UInt8) ==
                   expected_bytes
 
