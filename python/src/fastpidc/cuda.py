@@ -78,6 +78,16 @@ def _load_module():
     return cp.RawModule(code=source, options=("--std=c++11",))
 
 
+def _gpu_memory_budget_percent_label(
+    numerator: int = _GPU_MEMORY_BUDGET_NUMERATOR,
+    denominator: int = _GPU_MEMORY_BUDGET_DENOMINATOR,
+) -> str:
+    if denominator <= 0:
+        raise ValueError("denominator must be positive")
+    percent = 100 * numerator / denominator
+    return f"{percent:g}%"
+
+
 def _gpu_memory_budget_bytes(free_bytes: int) -> int:
     if free_bytes <= 0:
         raise ValueError("free_bytes must be positive")
@@ -149,7 +159,7 @@ def _puc_memory_plan(
     *,
     requested_chunk_size: int | None = None,
 ) -> tuple[int, int, int, int]:
-    """Plan the entire PUC device footprint against 65% of currently reusable VRAM.
+    """Plan the entire PUC device footprint against the configured reusable-VRAM fraction.
 
     Returns ``(chunk_size, fixed_bytes, bytes_per_chunk_column, budget_bytes)``.
     Python integers are unbounded, so the planning arithmetic itself cannot wrap.
@@ -170,7 +180,7 @@ def _puc_memory_plan(
         raise RuntimeError(
             "compute_puc_full_cuda: the fixed GPU buffers plus a one-gene chunk "
             f"would require {(fixed_bytes + bytes_per_chunk_column) / 2**30:.2f} GiB, "
-            "which exceeds the configured 65% memory budget "
+            f"which exceeds the configured {_gpu_memory_budget_percent_label()} memory budget "
             f"({budget_bytes / 2**30:.2f} GiB of {free_bytes / 2**30:.2f} GiB currently reusable). "
             "Reduce the number of genes/samples/bins, use a fixed small-bin discretizer, "
             "or use config.backend = 'cpu'."
@@ -187,7 +197,8 @@ def _puc_memory_plan(
         if requested_chunk_size > safe_max_chunk:
             raise RuntimeError(
                 f"compute_puc_full_cuda: requested chunk_size={requested_chunk_size} would exceed "
-                f"the configured 65% GPU-memory budget; the largest safe chunk is {safe_max_chunk} "
+                f"the configured {_gpu_memory_budget_percent_label()} GPU-memory budget; "
+                f"the largest safe chunk is {safe_max_chunk} "
                 f"with {free_bytes / 2**30:.2f} GiB currently reusable."
             )
         chunk_size = requested_chunk_size
@@ -201,7 +212,7 @@ def compute_puc_full_cuda(
     """GPU implementation of :func:`fastpidc.puc.compute_puc_full`.
 
     The complete device footprint is planned before large allocations against
-    65% of VRAM currently reusable by CuPy (driver-free memory plus unused pool
+    the configured fraction of VRAM currently reusable by CuPy (driver-free memory plus unused pool
     blocks, bounded by any configured pool limit). ``chunk_size=None`` chooses
     the largest safe chunk up to 256; an explicit chunk must also fit the same budget.
     """
@@ -272,7 +283,7 @@ def compute_puc_full_cuda(
             print(f"[fastpidc] GPU chunked PUC: processing {n} x {n} pairs (k_bins={k_bins})...")
             print(
                 f"[fastpidc] GPU memory: {free_bytes / 2**30:.2f} GiB reusable; "
-                f"65% budget={budget_bytes / 2**30:.2f} GiB; "
+                f"{_gpu_memory_budget_percent_label()} budget={budget_bytes / 2**30:.2f} GiB; "
                 f"fixed={fixed_bytes / 2**30:.2f} GiB"
             )
             print(f"[fastpidc] Using chunk size {chunk_size} ({n_chunks} iterations)")
@@ -476,6 +487,19 @@ def _bb_memory_batches(
     return batches
 
 
+def _bb_memory_plan(
+    bucket: list[int],
+    problems: list[BayesianBlocksProblem],
+    free_bytes: int,
+    count_dtype: np.dtype,
+    index_dtype: np.dtype,
+) -> tuple[list[list[int]], int]:
+    """Plan Bayesian-block batches against the configured reusable-memory fraction."""
+    budget_bytes = _gpu_memory_budget_bytes(free_bytes)
+    batches = _bb_memory_batches(bucket, problems, budget_bytes, count_dtype, index_dtype)
+    return batches, budget_bytes
+
+
 def _flatten_bb_batch(
     problems: list[BayesianBlocksProblem], problem_indices: list[int], count_dtype: np.dtype
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -608,7 +632,7 @@ def solve_bayesian_blocks_cuda(
     :func:`fastpidc.discretizers.solve_bayesian_blocks_cpu`, so the selected
     change points agree exactly with the CPU reference.
 
-    Each workload bucket is sized from 65% of the device memory reusable by
+    Each workload bucket is sized from the configured fraction of device memory reusable by
     CuPy at that point in the run. The per-problem byte estimate includes every
     packed device buffer and metadata array.
     """
@@ -659,15 +683,21 @@ def solve_bayesian_blocks_cuda(
             # for every bucket, including reusable free blocks in its memory
             # pool and respecting any configured pool limit.
             free_bytes = _available_gpu_memory_bytes(cp)
-            budget_bytes = _gpu_memory_budget_bytes(free_bytes)
-            batches = _bb_memory_batches(bucket, problems, budget_bytes, count_dtype, index_dtype)
+            batches, budget_bytes = _bb_memory_plan(
+                bucket,
+                problems,
+                free_bytes,
+                count_dtype,
+                index_dtype,
+            )
 
             if verbose:
                 bucket_min_u = min(problems[i].prefix_counts.size for i in bucket)
                 print(
                     f"[fastpidc] CUDA BB bucket {bucket_number}: {len(bucket)} genes, "
                     f"U_g={bucket_min_u}:{bucket_max_u}, threads={threads}, batches={len(batches)}, "
-                    f"reusable={free_bytes / 2**30:.2f} GiB, 65% budget={budget_bytes / 2**30:.2f} GiB"
+                    f"reusable={free_bytes / 2**30:.2f} GiB, "
+                    f"{_gpu_memory_budget_percent_label()} budget={budget_bytes / 2**30:.2f} GiB"
                 )
 
             for batch in batches:

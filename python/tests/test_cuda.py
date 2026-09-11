@@ -16,13 +16,16 @@ import pytest
 from fastpidc.cuda import (
     _KERNEL_INT_MAX,
     _MAX_CHUNK_SIZE,
+    _available_gpu_memory_bytes,
     _bb_kernel_name,
     _bb_memory_batches,
+    _bb_memory_plan,
     _bb_problem_bytes,
     _bb_quantile_buckets,
     _bb_threads_for_max_u,
     _check_kernel_scalar_limits,
     _gpu_memory_budget_bytes,
+    _gpu_memory_budget_percent_label,
     _puc_memory_plan,
     _reusable_gpu_memory_bytes,
     _smallest_unsigned_dtype,
@@ -60,8 +63,28 @@ def test_cuda_available_returns_a_bool():
     assert isinstance(cuda_available(), bool)
 
 
+def test_gpu_memory_budget_label_is_derived_from_the_configured_fraction():
+    import fastpidc.cuda as cuda_module
+
+    expected = (
+        100
+        * cuda_module._GPU_MEMORY_BUDGET_NUMERATOR
+        / cuda_module._GPU_MEMORY_BUDGET_DENOMINATOR
+    )
+    assert _gpu_memory_budget_percent_label() == f"{expected:g}%"
+    assert _gpu_memory_budget_percent_label(80, 100) == "80%"
+
+
 def test_gpu_memory_budget_is_65_percent_of_currently_free_memory():
     assert _gpu_memory_budget_bytes(1000) == 650
+    assert _gpu_memory_budget_bytes(1001) == 650  # integer floor, never rounds upward
+
+
+def test_gpu_memory_budget_rejects_nonpositive_inputs():
+    with pytest.raises(ValueError, match="positive"):
+        _gpu_memory_budget_bytes(0)
+    with pytest.raises(ValueError, match="positive"):
+        _gpu_memory_budget_bytes(-1)
 
 
 def test_reusable_gpu_memory_includes_cached_pool_blocks():
@@ -76,6 +99,40 @@ def test_reusable_gpu_memory_honors_a_cupy_pool_limit():
         _reusable_gpu_memory_bytes(1000, 400, pool_used_bytes=250, pool_limit_bytes=900)
         == 650
     )
+
+
+def test_available_gpu_memory_uses_driver_free_pool_cache_and_pool_limit():
+    class FakeRuntime:
+        @staticmethod
+        def memGetInfo():
+            return (1000, 2000)
+
+    class FakePool:
+        @staticmethod
+        def free_bytes():
+            return 400
+
+        @staticmethod
+        def used_bytes():
+            return 250
+
+        @staticmethod
+        def get_limit():
+            return 900
+
+    class FakeCuda:
+        runtime = FakeRuntime()
+
+    class FakeCupy:
+        cuda = FakeCuda()
+
+        @staticmethod
+        def get_default_memory_pool():
+            return FakePool()
+
+    # Physical reusable memory is 1000 + 400 = 1400 bytes, but the CuPy
+    # pool has only 900 - 250 = 650 bytes of allocatable headroom.
+    assert _available_gpu_memory_bytes(FakeCupy()) == 650
 
 
 def test_puc_memory_plan_counts_fixed_and_chunk_buffers_exactly():
@@ -101,6 +158,40 @@ def test_chunk_size_shrinks_when_memory_is_tight():
     tight, _, _, _ = _puc_memory_plan(n=5000, m=1000, k_bins=64, free_bytes=8 * GIB)
     roomy, _, _, _ = _puc_memory_plan(n=5000, m=1000, k_bins=64, free_bytes=64 * GIB)
     assert 1 <= tight < roomy <= _MAX_CHUNK_SIZE
+
+
+@pytest.mark.parametrize(
+    ("free_gib", "expected_chunk"),
+    [(12, 75), (16, 125), (24, 225), (32, 256)],
+)
+def test_production_sized_puc_plan_is_dynamic_and_never_exceeds_budget(free_gib, expected_chunk):
+    # Shape from the production run that exposed the old >2^31 flat-index bug.
+    # Exact expected chunks make this a regression test for both the 65% policy
+    # and the absence of a hidden/fixed ~8 GiB allocation ceiling.
+    n, m, k_bins = 12_071, 38_176, 33
+    chunk, fixed_bytes, bytes_per_chunk_column, budget_bytes = _puc_memory_plan(
+        n=n, m=m, k_bins=k_bins, free_bytes=free_gib * GIB
+    )
+
+    assert chunk == expected_chunk
+    assert budget_bytes == free_gib * GIB * 65 // 100
+    assert fixed_bytes + chunk * bytes_per_chunk_column <= budget_bytes
+
+    # Unless the independent 256-gene cap is what stopped growth, one more
+    # target gene must be the first chunk size that would exceed the budget.
+    if chunk < min(_MAX_CHUNK_SIZE, n):
+        assert fixed_bytes + (chunk + 1) * bytes_per_chunk_column > budget_bytes
+
+
+def test_puc_plan_can_safely_approve_more_than_eight_gib_of_device_buffers():
+    chunk, fixed_bytes, bytes_per_chunk_column, budget_bytes = _puc_memory_plan(
+        n=12_071, m=38_176, k_bins=33, free_bytes=32 * GIB
+    )
+    required_bytes = fixed_bytes + chunk * bytes_per_chunk_column
+
+    assert chunk == _MAX_CHUNK_SIZE
+    assert required_bytes > 8 * GIB
+    assert required_bytes <= budget_bytes
 
 
 def test_memory_plan_raises_before_allocating_when_one_gene_chunk_does_not_fit():
@@ -245,6 +336,39 @@ def test_bb_memory_batches_raises_when_one_problem_cannot_fit():
         _bb_memory_batches([0], problems, 1024, np.dtype(np.uint16), np.dtype(np.uint16))
 
 
+def test_bb_memory_plan_applies_65_percent_before_packing_batches():
+    # Make every problem the same size and choose free memory so exactly two
+    # problems fit in the 65% budget. This pins the composition of the budget
+    # policy and the batch packer, not just each helper in isolation.
+    problems = _bb_problems(sizes=(50,) * 6)
+    bucket = list(range(len(problems)))
+    count_dtype = index_dtype = np.dtype(np.uint16)
+    per_problem = _bb_problem_bytes(problems[0], count_dtype, index_dtype)
+    target_budget = 2 * per_problem
+    free_bytes = (target_budget * 100 + 64) // 65
+
+    batches, budget_bytes = _bb_memory_plan(
+        bucket, problems, free_bytes, count_dtype, index_dtype
+    )
+
+    assert budget_bytes == target_budget
+    assert batches == [[0, 1], [2, 3], [4, 5]]
+    for batch in batches:
+        batch_bytes = sum(_bb_problem_bytes(problems[i], count_dtype, index_dtype) for i in batch)
+        assert batch_bytes <= budget_bytes
+
+
+def test_bb_memory_plan_rejects_a_problem_that_cannot_fit_inside_65_percent():
+    problems = _bb_problems(sizes=(900,))
+    count_dtype = index_dtype = np.dtype(np.uint16)
+    per_problem = _bb_problem_bytes(problems[0], count_dtype, index_dtype)
+
+    # Giving the planner only `per_problem` bytes of reusable memory means its
+    # actual allocation budget is 65% of that, so this must fail pre-allocation.
+    with pytest.raises(RuntimeError, match="exceeds the CUDA batch budget"):
+        _bb_memory_plan([0], problems, per_problem, count_dtype, index_dtype)
+
+
 # --- Bayesian blocks: GPU behavior -----------------------------------------
 
 
@@ -385,6 +509,18 @@ def test_kernel_scalar_limits_allow_bin_pair_products_past_int32():
     # indexing arithmetic (memory availability is a separate concern).
     _check_kernel_scalar_limits(12_071, 38_176, 50_000)
     assert 50_000**2 > INT32_MAX
+
+
+def test_shared_kernel_keeps_composed_flat_offsets_64_bit():
+    # The true >8-GiB execution regression is opt-in, so normal Python CI also
+    # pins the critical widening expressions in the canonical shared source.
+    import fastpidc.cuda as cuda_module
+
+    source = cuda_module._KERNEL_SOURCE_PATH.read_text()
+    assert "const long long bin_pair = (long long)u * k_bins + v;" in source
+    assert "for (long long i64 = tid;" in source
+    assert "mi_matrix[(long long)x * n + z_global]" in source
+    assert "puc_scores[(long long)x * n + z_global]" in source
 
 
 @pytest.mark.parametrize(

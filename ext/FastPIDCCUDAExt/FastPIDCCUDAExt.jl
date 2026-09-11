@@ -97,6 +97,16 @@ const _GPU_MEMORY_BUDGET_NUMERATOR = 65
 const _GPU_MEMORY_BUDGET_DENOMINATOR = 100
 const _MAX_CHUNK_SIZE = 256
 
+function _gpu_memory_budget_percent_label(
+    numerator_value::Integer = _GPU_MEMORY_BUDGET_NUMERATOR,
+    denominator_value::Integer = _GPU_MEMORY_BUDGET_DENOMINATOR,
+)
+    denominator_value > 0 || throw(ArgumentError("denominator_value must be positive"))
+    percent = 100 * numerator_value // denominator_value
+    return denominator(percent) == 1 ?
+           "$(numerator(percent))%" : "$(round(Float64(percent), digits = 2))%"
+end
+
 function _gpu_memory_budget_bytes(free_bytes::Integer)
     free_bytes > 0 || throw(ArgumentError("free_bytes must be positive"))
     return Int(
@@ -192,7 +202,7 @@ function _puc_memory_plan(
     minimum_bytes <= budget_bytes || error(
         "compute_puc_full_cuda: the fixed GPU buffers plus a one-gene chunk " *
         "would require $(round(Float64(minimum_bytes) / 2^30, digits = 2)) GiB, " *
-        "which exceeds the configured 65% memory budget " *
+        "which exceeds the configured $(_gpu_memory_budget_percent_label()) memory budget " *
         "($(round(Float64(budget_bytes) / 2^30, digits = 2)) GiB of " *
         "$(round(free_bytes / 2^30, digits = 2)) GiB currently reusable). " *
         "Reduce the number of genes/samples/bins, use a fixed small-bin " *
@@ -230,10 +240,10 @@ end
 GPU implementation of [`FastPIDC.compute_puc_full`](@ref): computes the full
 pairwise MI matrix and pre-context PUC matrix for `nodes` on the GPU.
 Before allocating device buffers it plans the complete footprint - fixed data,
-marginals and output matrices plus chunked intermediates - against 65% of the
-memory currently reusable by the process (driver-free plus unused CUDA.jl pool
-blocks). The target (`z`) chunk is capped at 256 genes and shrunk
-as needed, leaving 35% headroom for allocator fragmentation, CUDA/runtime
+marginals and output matrices plus chunked intermediates - against the configured
+fraction of memory currently reusable by the process (driver-free plus unused
+CUDA.jl pool blocks). The target (`z`) chunk is capped at 256 genes and shrunk
+as needed, leaving the remaining headroom for allocator fragmentation, CUDA/runtime
 workspaces and concurrent users. If the fixed buffers plus a one-gene chunk do
 not fit that budget, the function raises a descriptive error before allocating
 the large device arrays.
@@ -271,8 +281,8 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
     _check_kernel_scalar_limits(num_nodes, num_samples, k_bins)
 
     # Plan the *entire* device footprint before allocating anything. The budget
-    # is 65% of currently reusable VRAM (driver-free plus unused CUDA.jl pool
-    # blocks), leaving 35% for allocator fragmentation,
+    # is the configured fraction of currently reusable VRAM (driver-free plus unused
+    # CUDA.jl pool blocks), leaving the remainder for allocator fragmentation,
     # runtime/library workspaces, and other users/processes on a shared GPU.
     free_bytes = _available_gpu_memory_bytes()
     memory_plan = _puc_memory_plan(num_nodes, num_samples, k_bins, free_bytes)
@@ -330,7 +340,7 @@ function FastPIDC.compute_puc_full_cuda(nodes, config, base)
             )
             println(
                 "[FastPIDC] GPU memory: $(round(free_bytes / 2^30, digits = 2)) GiB reusable; " *
-                "65% budget=$(round(memory_plan.budget_bytes / 2^30, digits = 2)) GiB; " *
+                "$(_gpu_memory_budget_percent_label()) budget=$(round(memory_plan.budget_bytes / 2^30, digits = 2)) GiB; " *
                 "fixed=$(round(memory_plan.fixed_bytes / 2^30, digits = 2)) GiB",
             )
             println(
@@ -556,6 +566,24 @@ function _bb_memory_batches(
     return batches
 end
 
+function _bb_memory_plan(
+    bucket::Vector{Int},
+    problems::Vector{FastPIDC.BayesianBlocksProblem},
+    free_bytes::Integer,
+    ::Type{CountT},
+    ::Type{IndexT},
+) where {CountT<:Integer,IndexT<:Integer}
+    budget_bytes = _gpu_memory_budget_bytes(free_bytes)
+    batches = _bb_memory_batches(
+        bucket,
+        problems,
+        budget_bytes,
+        CountT,
+        IndexT,
+    )
+    return (batches = batches, budget_bytes = budget_bytes)
+end
+
 function _flatten_bb_batch(
     problems::Vector{FastPIDC.BayesianBlocksProblem},
     problem_indices::Vector{Int},
@@ -769,7 +797,7 @@ function FastPIDC.solve_bayesian_blocks_cuda(
 
     # The priors remain live across all batches. Allocate them first, then size
     # each bucket from the *remaining* reusable memory at runtime. Every batch is
-    # kept within 65% of what is free at that moment, and _bb_problem_bytes
+    # kept within the configured fraction of what is free at that moment, and _bb_problem_bytes
     # includes all per-gene device metadata, not just the large state arrays.
     priors_gpu = CuArray(_bb_prior_values(max_u))
 
@@ -789,14 +817,15 @@ function FastPIDC.solve_bayesian_blocks_cuda(
             threads = _bb_threads_for_max_u(bucket_max_u)
 
             free_bytes = _available_gpu_memory_bytes()
-            budget_bytes = _gpu_memory_budget_bytes(free_bytes)
-            batches = _bb_memory_batches(
+            memory_plan = _bb_memory_plan(
                 bucket,
                 problems,
-                budget_bytes,
+                free_bytes,
                 CountT,
                 IndexT,
             )
+            budget_bytes = memory_plan.budget_bytes
+            batches = memory_plan.batches
 
             if verbose
                 bucket_min_u = minimum(i -> length(problems[i].prefix_counts), bucket)
@@ -805,7 +834,7 @@ function FastPIDC.solve_bayesian_blocks_cuda(
                     "$(length(bucket)) genes, U_g=$bucket_min_u:$bucket_max_u, " *
                     "threads=$threads, batches=$(length(batches)), " *
                     "reusable=$(round(free_bytes / 2.0^30; digits = 2)) GiB, " *
-                    "65% budget=$(round(budget_bytes / 2.0^30; digits = 2)) GiB",
+                    "$(_gpu_memory_budget_percent_label()) budget=$(round(budget_bytes / 2.0^30; digits = 2)) GiB",
                 )
             end
 
