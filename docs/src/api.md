@@ -146,6 +146,7 @@ FastPIDCCUDAExt
 FastPIDCCUDAExt._kernel_source_path
 FastPIDCCUDAExt._compile_ptx
 FastPIDCCUDAExt._get_module
+FastPIDCCUDAExt._check_kernel_scalar_limits
 FastPIDCCUDAExt._bb_kernel_name
 FastPIDC.bayesian_blocks_cuda_available
 FastPIDC.solve_bayesian_blocks_cuda

@@ -29,12 +29,25 @@
 //
 // All arrays are indexed 0-based, row-major (C order), and passed as flat
 // buffers with the shapes documented per kernel.
+//
+// Indexing contract: the scalar parameters (n, m, k_bins, z_start, z_chunk_size)
+// are int32 on both hosts, but the BUFFERS ARE NOT BOUNDED BY INT32. `counts`
+// alone holds k_bins^2 * n * z_chunk_size elements, which exceeds 2^31 on
+// ordinary single-cell datasets - 12k genes x 33 bins x a 256-gene chunk is
+// 3.4e9 elements, and computing that index in `int` wrapped it negative and
+// faulted with CUDA_ERROR_ILLEGAL_ADDRESS. Every composed flat offset below is
+// therefore `long long`, hoisted out of the hot loops as a base offset plus a
+// loop-invariant stride so the inner bodies cost 64-bit adds rather than 32-bit
+// multiply-add chains. The bin-pair term `u * k_bins + v` is widened before
+// multiplication as well, so no composed flat-buffer offset relies on 32-bit
+// arithmetic.
 
 extern "C" {
 
 // data:        (m, n) int32         -- data[s * n + x] = bin id of gene x, sample s
 // counts:      (k_bins, k_bins, n, chunk) int32, zero-initialized by the caller
 //              counts[((u * k_bins + v) * n + x) * chunk + z_local]
+// Both of these routinely exceed 2^31 elements; see the indexing contract above.
 // One thread handles one (x, z_local) pair, looping over all m samples.
 __global__ void joint_counts_kernel(
     const int* __restrict__ data,
@@ -49,11 +62,24 @@ __global__ void joint_counts_kernel(
     int z_global = z_start + z_local;
     if (z_global >= n || x == z_global) return;
 
-    for (int s = 0; s < m; ++s) {
-        int u = data[s * n + x];
-        int v = data[s * n + z_global];
+    // 64-bit offsets: counts holds k_bins^2 * n * z_chunk_size elements, which
+    // exceeds 2^31 on ordinary datasets. The strides are loop-invariant, so they
+    // are hoisted here and the sample loop costs one widening multiply-add.
+    const long long plane_stride = (long long)n * z_chunk_size;   // one (u, v) plane
+    const long long cell = (long long)x * z_chunk_size + z_local; // this thread's (x, z_local)
+
+    // Walking the sample row also keeps data's m * n index 64-bit. One
+    // accumulator serves both reads, since they differ only by a fixed column.
+    long long data_row = 0;
+
+    for (int s = 0; s < m; ++s, data_row += n) {
+        int u = data[data_row + x];
+        int v = data[data_row + z_global];
         if (u >= 0 && u < k_bins && v >= 0 && v < k_bins) {
-            int idx = ((u * k_bins + v) * n + x) * z_chunk_size + z_local;
+            // Widen before forming the bin-pair index: k_bins is an int32
+            // launch scalar, but k_bins^2 need not fit in int32.
+            const long long bin_pair = (long long)u * k_bins + v;
+            long long idx = bin_pair * plane_stride + cell;
             atomicAdd(&counts[idx], 1);
         }
     }
@@ -65,6 +91,7 @@ __global__ void joint_counts_kernel(
 // si_matrix:   (k_bins, n, chunk) float64 -- si_matrix[(v * n + x) * chunk + z_local]
 //              specific information of source x with respect to target z_global,
 //              at target bin v.
+// counts may exceed 2^31 elements; see the indexing contract above.
 // One thread handles one (x, z_local) pair.
 __global__ void mi_si_kernel(
     const int* __restrict__ counts,
@@ -81,19 +108,35 @@ __global__ void mi_si_kernel(
     int z_global = z_start + z_local;
     if (z_global >= n || x == z_global) return;
 
+    // 64-bit offsets, hoisted once per thread. counts (k_bins, k_bins, n, chunk)
+    // advances by plane_stride per v and u_stride per u; si_matrix (k_bins, n,
+    // chunk) advances by plane_stride per v. Both loops then cost 64-bit adds
+    // only. The advances live in the for-increment clause so the `continue`s
+    // below cannot skip them.
+    const long long plane_stride = (long long)n * z_chunk_size;
+    const long long u_stride = plane_stride * k_bins;
+    const long long cell = (long long)x * z_chunk_size + z_local;
+
     double inv_m = 1.0 / (double)m;
     double mi_val = 0.0;
 
-    for (int v = 0; v < k_bins; ++v) {
-        double p_z_v = marginals[v * n + z_global];
+    long long counts_v = cell;    // counts[((0 * k_bins + v) * n + x) * chunk + z_local]
+    long long si_idx = cell;      // si_matrix[(v * n + x) * chunk + z_local]
+    long long marg_z = z_global;  // marginals[v * n + z_global]
+
+    for (int v = 0; v < k_bins; ++v,
+         counts_v += plane_stride, si_idx += plane_stride, marg_z += n) {
+        double p_z_v = marginals[marg_z];
         if (p_z_v <= 0.0) continue;
 
         double si_v = 0.0;
-        for (int u = 0; u < k_bins; ++u) {
-            double p_x_u = marginals[u * n + x];
+        long long counts_uv = counts_v;  // u = 0
+        long long marg_x = x;            // marginals[u * n + x]
+        for (int u = 0; u < k_bins; ++u, counts_uv += u_stride, marg_x += n) {
+            double p_x_u = marginals[marg_x];
             if (p_x_u <= 0.0) continue;
 
-            int c_uv = counts[((u * k_bins + v) * n + x) * z_chunk_size + z_local];
+            int c_uv = counts[counts_uv];
             double p_uv = (double)c_uv * inv_m;
 
             if (p_uv > 0.0) {
@@ -102,10 +145,10 @@ __global__ void mi_si_kernel(
                 si_v += p_u_cond_v * log2(p_u_cond_v / p_x_u);
             }
         }
-        si_matrix[(v * n + x) * z_chunk_size + z_local] = si_v;
+        si_matrix[si_idx] = si_v;
     }
 
-    mi_matrix[x * n + z_global] = mi_val;
+    mi_matrix[(long long)x * n + z_global] = mi_val;
 }
 
 // si_matrix:   (k_bins, n, chunk) float64, as produced above
@@ -129,20 +172,33 @@ __global__ void puc_accumulation_kernel(
     int z_global = z_start + z_local;
     if (z_global >= n || x == z_global) return;
 
-    double mi_xz = mi_matrix[x * n + z_global];
+    double mi_xz = mi_matrix[(long long)x * n + z_global];
     if (mi_xz <= 1e-12) return;
 
+    // si_matrix is (k_bins, n, chunk): one bin plane is plane_stride apart, one
+    // source gene is z_chunk_size apart. Both walks are 64-bit, and the advances
+    // live in the for-increment clauses so the `continue`s cannot skip them.
+    const long long plane_stride = (long long)n * z_chunk_size;
+    const long long si_x_cell = (long long)x * z_chunk_size + z_local;
+
     double local_puc = 0.0;
-    for (int y = 0; y < n; ++y) {
+    long long si_y_cell = z_local;  // y = 0: (0 * n + y) * chunk + z_local
+
+    for (int y = 0; y < n; ++y, si_y_cell += z_chunk_size) {
         if (y == x || y == z_global) continue;
 
         double redundancy = 0.0;
-        for (int k = 0; k < k_bins; ++k) {
-            double p_z_k = marginals[k * n + z_global];
+        long long si_x_idx = si_x_cell;
+        long long si_y_idx = si_y_cell;
+        long long marg_idx = z_global;  // marginals[k * n + z_global]
+
+        for (int k = 0; k < k_bins; ++k,
+             si_x_idx += plane_stride, si_y_idx += plane_stride, marg_idx += n) {
+            double p_z_k = marginals[marg_idx];
             if (p_z_k <= 0.0) continue;
 
-            double si_x = si_matrix[(k * n + x) * z_chunk_size + z_local];
-            double si_y = si_matrix[(k * n + y) * z_chunk_size + z_local];
+            double si_x = si_matrix[si_x_idx];
+            double si_y = si_matrix[si_y_idx];
             redundancy += p_z_k * fmin(si_x, si_y);
         }
 
@@ -152,7 +208,7 @@ __global__ void puc_accumulation_kernel(
         }
     }
 
-    puc_scores[x * n + z_global] = local_puc;
+    puc_scores[(long long)x * n + z_global] = local_puc;
 }
 
 } // extern "C"
@@ -265,16 +321,20 @@ __device__ void fastpidc_bayesian_blocks_dp(
         double local_best = fastpidc_negative_infinity();
         int local_i = FASTPIDC_BB_NO_CANDIDATE;
 
-        for (int i = tid; i <= k; i += nthreads) {
+        // Use a 64-bit loop cursor so the final `i += nthreads` cannot wrap if
+        // n_unique approaches the signed-int32 ABI ceiling. Candidate values
+        // themselves are still <= INT32_MAX and are narrowed only after checking.
+        for (long long i64 = tid; i64 <= (long long)k; i64 += nthreads) {
+            const int i = (int)i64;
             const double prefix_before =
-                (i == 0) ? 0.0 : (double)prefix_counts[state_start + i - 1];
+                (i == 0) ? 0.0 : (double)prefix_counts[state_start + i64 - 1];
             const double count = prefix_k - prefix_before;
-            const double width = block_lengths[block_start + i] - block_length_end;
+            const double width = block_lengths[block_start + i64] - block_length_end;
 
             // Fitness function (eq. 19) and prior (eq. 21) from Scargle 2012.
             double fit = count * log(count / width) - prior;
             if (i > 0) {
-                fit += best[state_start + i - 1];
+                fit += best[state_start + i64 - 1];
             }
 
             if (fastpidc_bb_take_other(fit, i, local_best, local_i)) {

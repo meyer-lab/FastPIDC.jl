@@ -34,6 +34,55 @@ function parse_args()
     return args
 end
 
+# Every flag main() actually reads (see the `get`/`haskey` calls below). Kept
+# in sync with those by hand, since parse_args() has no way to know which keys
+# are meaningful - it happily stores (and silently drops) anything.
+const VALID_ARG_KEYS = Set([
+    "help",
+    "infile",
+    "outfile",
+    "delim",
+    "discretizer",
+    "estimator",
+    "n-bins",
+    "base",
+    "backend",
+    "bb-backend",
+    "output-format",
+    "dump-mi-path",
+    "dump-puc-path",
+    "verbose",
+])
+
+"""
+    validate_args(args)
+
+`parse_args` accepts any `--key value` pair, so a misspelled or
+wrongly-punctuated flag was
+previously stored under a key `main()` never reads, silently keeping its
+default rather than erroring - a caller could ask for `--discretizer
+uniform_width --n_bins 6` and get 10 bins with no indication anything was
+wrong. This checks every parsed key against [`VALID_ARG_KEYS`](@ref) and
+errors out, naming the likely intended flag when the mismatch is only a
+`-`/`_` swap.
+"""
+function validate_args(args::Dict{String,String})
+    unknown = sort(collect(setdiff(keys(args), VALID_ARG_KEYS)))
+    isempty(unknown) && return nothing
+
+    lines = String[]
+    for key in unknown
+        swapped = replace(key, "-" => "_", "_" => "-")
+        hint = swapped in VALID_ARG_KEYS ? " (did you mean --$swapped?)" : ""
+        push!(lines, "  --$key$hint")
+    end
+    error(
+        "Unrecognized command-line argument(s):\n" *
+        join(lines, "\n") *
+        "\nRun with --help to see the full list of supported arguments.",
+    )
+end
+
 function parse_delim(s::AbstractString)
     s_l = lowercase(strip(s))
     if s_l == "space" || s_l == " "
@@ -76,7 +125,7 @@ Basic options:
                           Default: 'bayesian_blocks'
   --estimator STR         e.g. 'maximum_likelihood'
                           Default: 'maximum_likelihood'
-  --n_bins INT            Number of bins (ignored by bayesian_blocks). Default: 10
+  --n-bins INT            Number of bins (ignored by bayesian_blocks). Default: 10
   --base INT              Log base for MI (2, e, 10). Default: 2
 
 Execution / Environment:
@@ -91,7 +140,7 @@ Diagnostics Dumps:
   --dump-puc-path PATH    If set, dump pre-context PUC scores here (TSV).
 
 Other:
-  --verbose               Print detailed progress information
+  --verbose BOOL          Print detailed progress information. Default: false
   --help, -h              Show this help and exit.
 
 Example:
@@ -108,6 +157,8 @@ function main()
         println(HELP_TEXT)
         return
     end
+
+    validate_args(args)
 
     # ----------------- Required arguments -----------------
     infile = get(args, "infile", nothing)
@@ -126,7 +177,7 @@ function main()
     delim = parse_delim(delim_str)
     discretizer = get(args, "discretizer", "bayesian_blocks")
     estimator = get(args, "estimator", "maximum_likelihood")
-    n_bins = parse(Int, get(args, "n_bins", "10"))
+    n_bins = parse(Int, get(args, "n-bins", "10"))
     base = parse(Int, get(args, "base", "2"))
     verbose_flag = parse_bool(get(args, "verbose", "false"))
 
@@ -185,7 +236,7 @@ function main()
     println("  delim            = $delim_str")
     println("  discretizer      = $discretizer")
     println("  estimator        = $estimator")
-    println("  n_bins           = $n_bins")
+    println("  n-bins           = $n_bins")
     println("  base             = $base")
     println("  backend          = $(cfg.backend)")
     println("  bb_backend       = $(cfg.bb_backend)")
@@ -222,15 +273,21 @@ function main()
     @say @sprintf("All done. Total runtime: %.1f s", t_total)
 end
 
-# Ensure we get a traceback for errors
-try
-    main()
-catch e
-    bt = catch_backtrace()
-    @say "ERROR: $(sprint(showerror, e))"
-    println("\nStacktrace:")
-    Base.show_backtrace(stdout, bt)
-    println()
-    @say "Tip: If the error mentions discretization, try --discretizer uniform_width and --n_bins 10-20."
-    exit(1)
+# Only run when invoked as a script (`julia CLI_fastpidc.jl ...`), not when
+# `include()`d - e.g. by a test file exercising `parse_args`/`validate_args`
+# in isolation - which would otherwise execute `main()` against the including
+# process's `ARGS` and `exit(1)` out from under it on any error.
+if abspath(PROGRAM_FILE) == @__FILE__
+    # Ensure we get a traceback for errors
+    try
+        main()
+    catch e
+        bt = catch_backtrace()
+        @say "ERROR: $(sprint(showerror, e))"
+        println("\nStacktrace:")
+        Base.show_backtrace(stdout, bt)
+        println()
+        @say "Tip: If the error mentions discretization, try --discretizer uniform_width and --n-bins 10-20."
+        exit(1)
+    end
 end

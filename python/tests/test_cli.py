@@ -43,7 +43,7 @@ def test_cli_runs_end_to_end(tmp_path, text_data_file, capsys):
             "cpu",
             "--discretizer",
             "uniform_width",
-            "--n_bins",
+            "--n-bins",
             "2",
         ]
     )
@@ -109,7 +109,7 @@ def test_cli_npy_output(tmp_path, text_data_file):
             "cpu",
             "--discretizer",
             "uniform_width",
-            "--n_bins",
+            "--n-bins",
             "2",
             "--output-format",
             "npy",

@@ -60,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--estimator", default="maximum_likelihood", help="Default: maximum_likelihood")
     parser.add_argument(
-        "--n_bins", type=int, default=10, help="Number of bins (ignored by bayesian_blocks). Default: 10"
+        "--n-bins", type=int, default=10, help="Number of bins (ignored by bayesian_blocks). Default: 10"
     )
     parser.add_argument("--base", type=int, default=2, help="Log base for MI (2, e-like int, 10). Default: 2")
     parser.add_argument("--backend", default="cuda", choices=("cuda", "cpu"), help="PUC/PIDC backend. Default: cuda")
@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"ERROR: {e}")
         print("\nTraceback:")
         traceback.print_exc()
-        _say("Tip: If the error mentions discretization, try --discretizer uniform_width and --n_bins 10-20.")
+        _say("Tip: If the error mentions discretization, try --discretizer uniform_width and --n-bins 10-20.")
         return 1
 
     _say(f"Wrote edges to {args.outfile}")

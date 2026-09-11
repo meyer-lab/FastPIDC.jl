@@ -25,9 +25,15 @@ Statistics = "1.11.1"
 julia = "≥ 1.0.0"
 
 [extras]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["DelimitedFiles", "LinearAlgebra", "Test"]
+# Dates and Printf are needed because test/cli_argument_tests.jl includes
+# CLI_fastpidc.jl (to exercise its argument parsing/validation in isolation),
+# which `using`s both; they are otherwise resolvable stdlibs, not real deps of
+# the package itself.
+test = ["Dates", "DelimitedFiles", "LinearAlgebra", "Printf", "Test"]

@@ -36,6 +36,84 @@ function _bb_test_values()
     return values
 end
 
+const _CUDA_EXT = Base.get_extension(FastPIDC, :FastPIDCCUDAExt)
+
+@testset "CUDA memory planning (device-independent)" begin
+    @test _CUDA_EXT !== nothing
+    cuda_ext = _CUDA_EXT
+
+    @testset "65% budget and reusable-memory arithmetic" begin
+        @test cuda_ext._gpu_memory_budget_percent_label() ==
+              "$(100 * cuda_ext._GPU_MEMORY_BUDGET_NUMERATOR ÷ cuda_ext._GPU_MEMORY_BUDGET_DENOMINATOR)%"
+        @test cuda_ext._gpu_memory_budget_percent_label(80, 100) == "80%"
+        @test cuda_ext._gpu_memory_budget_bytes(1000) == 650
+        @test cuda_ext._gpu_memory_budget_bytes(1001) == 650
+        @test_throws ArgumentError cuda_ext._gpu_memory_budget_bytes(0)
+        @test_throws ArgumentError cuda_ext._gpu_memory_budget_bytes(-1)
+
+        @test cuda_ext._reusable_gpu_memory_bytes(1000, 400, 250) == 1150
+        @test_throws ArgumentError cuda_ext._reusable_gpu_memory_bytes(100, 50, 51)
+    end
+
+    @testset "Bayesian-block 65% batch planner" begin
+        values = Float64.(1:50)
+        problem = FastPIDC.prepare_bayesian_blocks(values)
+        problems = [problem for _ = 1:6]
+        bucket = collect(eachindex(problems))
+        per_problem = cuda_ext._bb_problem_bytes(problem, UInt16, UInt16)
+        u = length(problem.prefix_counts)
+        @test per_problem ==
+              sizeof(Float64) * (u + 1) +
+              sizeof(UInt16) * u +
+              sizeof(Float64) * u +
+              sizeof(UInt16) * u +
+              sizeof(Int64) +
+              sizeof(Int64) +
+              sizeof(Int32) +
+              sizeof(Float64)
+
+        # Prefix counts and back-pointers must widen before their values overflow.
+        @test cuda_ext._smallest_unsigned_type(255) == UInt8
+        @test cuda_ext._smallest_unsigned_type(256) == UInt16
+        @test cuda_ext._smallest_unsigned_type(65_535) == UInt16
+        @test cuda_ext._smallest_unsigned_type(65_536) == UInt32
+        @test cuda_ext._smallest_unsigned_type(big(typemax(UInt32)) + 1) == UInt64
+
+        # Pick reusable memory whose 65% budget is exactly two problems. The
+        # resulting batches must therefore contain exactly two genes each.
+        target_budget = 2 * per_problem
+        free_bytes = cld(target_budget * 100, 65)
+        plan = cuda_ext._bb_memory_plan(
+            bucket,
+            problems,
+            free_bytes,
+            UInt16,
+            UInt16,
+        )
+
+        @test plan.budget_bytes == target_budget
+        @test plan.batches == [[1, 2], [3, 4], [5, 6]]
+        for batch in plan.batches
+            batch_bytes = sum(
+                i -> cuda_ext._bb_problem_bytes(problems[i], UInt16, UInt16),
+                batch,
+            )
+            @test batch_bytes <= plan.budget_bytes
+        end
+
+        # One problem requiring more than the 65% budget is rejected before any
+        # device allocation is attempted.
+        @test_throws ArgumentError cuda_ext._bb_memory_plan(
+            [1],
+            [problem],
+            per_problem,
+            UInt16,
+            UInt16,
+        )
+    end
+
+end
+
 if CUDA.functional()
     @testset "CUDA Bayesian blocks equivalence and determinism" begin
         cuda_ext = Base.get_extension(FastPIDC, :FastPIDCCUDAExt)
@@ -196,6 +274,12 @@ if CUDA.functional()
             end
         end
 
+        @testset "GPU memory accounting" begin
+            @test cuda_ext._gpu_memory_budget_bytes(1000) == 650
+            @test cuda_ext._reusable_gpu_memory_bytes(1000, 400, 250) == 1150
+            @test_throws ArgumentError cuda_ext._reusable_gpu_memory_bytes(100, 50, 51)
+        end
+
         @testset "Lightweight U_g bucketing and batching" begin
             buckets = cuda_ext._bb_quantile_buckets(problems)
             @test sort(vcat(buckets...)) == collect(eachindex(problems))
@@ -212,7 +296,11 @@ if CUDA.functional()
                 sizeof(Float64) * (u + 1) +
                 sizeof(UInt8) * u +
                 sizeof(Float64) * u +
-                sizeof(UInt8) * u
+                sizeof(UInt8) * u +
+                sizeof(Int64) +
+                sizeof(Int64) +
+                sizeof(Int32) +
+                sizeof(Float64)
             @test cuda_ext._bb_problem_bytes(problems[1], UInt8, UInt8) ==
                   expected_bytes
 
