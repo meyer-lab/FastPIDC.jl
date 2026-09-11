@@ -61,7 +61,7 @@ const VALID_ARG_KEYS = Set([
 wrongly-punctuated flag was
 previously stored under a key `main()` never reads, silently keeping its
 default rather than erroring - a caller could ask for `--discretizer
-uniform_width --n-bins 6` and get 10 bins with no indication anything was
+uniform_width --n_bins 6` and get 10 bins with no indication anything was
 wrong. This checks every parsed key against [`VALID_ARG_KEYS`](@ref) and
 errors out, naming the likely intended flag when the mismatch is only a
 `-`/`_` swap.
@@ -140,7 +140,7 @@ Diagnostics Dumps:
   --dump-puc-path PATH    If set, dump pre-context PUC scores here (TSV).
 
 Other:
-  --verbose               Print detailed progress information
+  --verbose BOOL          Print detailed progress information. Default: false
   --help, -h              Show this help and exit.
 
 Example:
