@@ -17,7 +17,7 @@ makedocs(;
     sitename = "FastPIDC.jl",
     format = Documenter.HTML(;
         canonical = "https://meyer-lab.github.io/FastPIDC.jl",
-        edit_link = "master",
+        edit_link = "main",
         assets = String[],
     ),
     pages = [
