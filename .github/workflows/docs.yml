@@ -3,7 +3,7 @@ name: Documentation
 on:
   push:
     branches:
-      - master
+      - main
     tags:
       - "v*"
   pull_request:
@@ -37,7 +37,7 @@ jobs:
           path: docs/build
 
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     permissions:
       pages: write
