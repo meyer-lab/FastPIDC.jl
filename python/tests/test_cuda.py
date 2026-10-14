@@ -591,3 +591,47 @@ def test_puc_indexing_past_int32_matches_a_smaller_chunk():
     np.testing.assert_array_equal(overflow_puc, control_puc)
     assert np.all(np.isfinite(overflow_mi))
     assert np.all(overflow_puc >= 0)
+
+
+# --- kernel compilation across GPU architectures -------------------------
+
+
+def test_probe_kernel_exists_in_the_kernel_source():
+    """`_load_module_for_arch` compiles `_PROBE_KERNEL` to force the module to
+    materialize. If that kernel is renamed in the .cu the probe silently
+    breaks and every CUDA call fails somewhere unhelpful, so pin the name."""
+    from fastpidc.cuda import _KERNEL_SOURCE_PATH, _PROBE_KERNEL
+
+    assert _PROBE_KERNEL in _KERNEL_SOURCE_PATH.read_text()
+
+
+@pytest.mark.skipif(not cuda_available(), reason="no functional GPU / cupy backend available")
+def test_module_is_cached_per_architecture():
+    """The compiled binary depends on the device, so the cache is keyed by
+    compute capability rather than shared process-wide."""
+    import cupy as cp
+
+    from fastpidc.cuda import _load_module, _load_module_for_arch
+
+    first = _load_module()
+    assert _load_module() is first
+
+    capability = cp.cuda.Device().compute_capability
+    before = _load_module_for_arch.cache_info()
+    assert _load_module_for_arch(capability) is first
+    # Same architecture must hit the cache rather than recompile.
+    assert _load_module_for_arch.cache_info().hits == before.hits + 1
+
+
+@pytest.mark.skipif(not cuda_available(), reason="no functional GPU / cupy backend available")
+def test_kernels_load_on_this_gpu_without_environment_help():
+    """Regression for the RTX 5080 (cc 12.0): cupy emitted a cubin for an
+    architecture below the device and the driver refused to load it. The
+    fallback must handle that with no CUPY_COMPILE_WITH_PTX in the
+    environment."""
+    import os
+
+    from fastpidc.cuda import _load_module
+
+    assert os.environ.get("CUPY_COMPILE_WITH_PTX", "") in ("", "0")
+    assert _load_module().get_function("joint_counts_kernel") is not None

@@ -32,6 +32,7 @@ from .types import (
 __all__ = [
     "get_adjacency_matrix",
     "get_nodes",
+    "read_h5ad_obs",
     "read_network_file",
     "write_network_file",
     "write_network_npy",
@@ -158,11 +159,25 @@ def get_nodes(
 ) -> list[Node]:
     """Get a list of all :class:`Node`s from a data file.
 
-    Dispatches to :func:`_get_nodes_h5` for ``.h5`` files, or to the
-    whitespace/delimited text loader otherwise. ``bb_backend`` selects the
-    Bayesian-blocks solver (``"cuda"`` falls back to ``"cpu"`` with a warning
-    when no GPU is available).
+    Dispatches to :func:`_get_nodes_h5ad` for ``.h5ad`` (AnnData) files,
+    :func:`_get_nodes_h5` for ``.h5`` files, or to the whitespace/delimited
+    text loader otherwise. ``bb_backend`` selects the Bayesian-blocks solver
+    (``"cuda"`` falls back to ``"cpu"`` with a warning when no GPU is
+    available).
+
+    Per-cell metadata in an ``.h5ad``'s ``obs`` is *not* returned here - read
+    it separately with :func:`read_h5ad_obs`, which preserves cell order so
+    the two line up.
     """
+    if str(data_file_path).endswith(".h5ad"):
+        return _get_nodes_h5ad(
+            data_file_path,
+            discretizer=discretizer,
+            estimator=estimator,
+            number_of_bins=number_of_bins,
+            bb_backend=bb_backend,
+            verbose=verbose,
+        )
     if str(data_file_path).endswith(".h5"):
         return _get_nodes_h5(
             data_file_path,
@@ -233,6 +248,142 @@ class _WhitespaceReader:
     def __next__(self):
         line = next(self._fh)
         return line.split()
+
+
+# --- AnnData (.h5ad) -----------------------------------------------------
+#
+# An .h5ad is plain HDF5, so h5py reads it without taking on anndata as a
+# dependency. Only the encodings this package actually needs are handled:
+# a dense or CSC `X`, a string index, and the `obs` column encodings AnnData
+# emits for strings, categoricals and plain numeric/boolean arrays.
+
+
+def _decode_strings(values: np.ndarray) -> np.ndarray:
+    """Decode an HDF5 string array to a numpy array of ``str``."""
+    return np.array([v.decode() if isinstance(v, bytes) else str(v) for v in values], dtype=object)
+
+
+def _read_h5ad_column(obj) -> np.ndarray:
+    """Read one AnnData-encoded column (an `obs`/`var` entry) as a flat array.
+
+    Handles the three encodings AnnData writes: a bare ``array``/``string-array``
+    dataset, a ``categorical`` group (``categories`` indexed by ``codes``), and
+    the ``nullable-*`` groups (``values`` plus a validity ``mask``). A nullable
+    column's masked entries come back as-is; nothing here needs them.
+    """
+    if isinstance(obj, h5py.Dataset):
+        values = obj[()]
+        return _decode_strings(values) if values.dtype == object else np.asarray(values)
+
+    encoding = obj.attrs.get("encoding-type", "")
+    if isinstance(encoding, bytes):
+        encoding = encoding.decode()
+
+    if encoding == "categorical":
+        categories = _decode_strings(obj["categories"][()])
+        codes = np.asarray(obj["codes"][()])
+        # A code of -1 is AnnData's NaN; surface it rather than silently
+        # wrapping around to the last category.
+        out = np.full(codes.shape, None, dtype=object)
+        valid = codes >= 0
+        out[valid] = categories[codes[valid]]
+        return out
+    if encoding.startswith("nullable"):
+        return _read_h5ad_column(obj["values"])
+    raise ValueError(f"Unsupported AnnData column encoding: {encoding!r}")
+
+
+def _h5ad_index(group) -> np.ndarray:
+    """Read the index column of an AnnData dataframe group."""
+    key = group.attrs.get("_index", "_index")
+    if isinstance(key, bytes):
+        key = key.decode()
+    return _read_h5ad_column(group[key])
+
+
+def read_h5ad_obs(data_file_path: str, columns: Sequence[str] | None = None) -> dict[str, np.ndarray]:
+    """Read per-cell metadata (``obs``) from an ``.h5ad`` file.
+
+    Returns one array per column, each in the file's cell order - the same
+    order :func:`get_nodes` discretizes rows in, so a mask built from these
+    arrays indexes a :class:`~fastpidc.types.Node`'s ``binned_values``
+    directly. The index column is included under its own name.
+
+    Parameters
+    ----------
+    columns : the columns to read. ``None`` (default) reads all of them.
+    """
+    with h5py.File(data_file_path, "r") as f:
+        if "obs" not in f:
+            raise ValueError(f"{data_file_path} has no 'obs' group; it is not an AnnData file.")
+        obs = f["obs"]
+        index_key = obs.attrs.get("_index", "_index")
+        if isinstance(index_key, bytes):
+            index_key = index_key.decode()
+
+        wanted = list(columns) if columns is not None else [k for k in obs.keys()]
+        missing = [c for c in wanted if c not in obs]
+        if missing:
+            raise ValueError(f"obs columns not found in {data_file_path}: {missing}. Available: {sorted(obs.keys())}")
+        return {name: _read_h5ad_column(obs[name]) for name in wanted}
+
+
+def _get_nodes_h5ad(
+    data_file_path: str,
+    *,
+    discretizer: str = "bayesian_blocks",
+    estimator: str = "maximum_likelihood",
+    number_of_bins: int = 10,
+    bb_backend: str = "cuda",
+    verbose: bool = False,
+) -> list[Node]:
+    """Get a list of all :class:`Node`s from an AnnData (``.h5ad``) file.
+
+    Gene labels come from ``var``'s index, and the expression matrix from
+    ``X`` in AnnData's native ``(cells, genes)`` orientation - dense, or a CSR
+    or CSC group. Cell order is preserved, so :func:`read_h5ad_obs` lines up
+    with the resulting nodes row for row.
+    """
+    with h5py.File(data_file_path, "r") as f:
+        for required in ("X", "var"):
+            if required not in f:
+                raise ValueError(f"Invalid AnnData schema in {data_file_path}. Missing required entry: {required!r}")
+        gene_names = [str(name) for name in _h5ad_index(f["var"])]
+
+        obj = f["X"]
+        if isinstance(obj, h5py.Group):
+            encoding = obj.attrs.get("encoding-type", "")
+            if isinstance(encoding, bytes):
+                encoding = encoding.decode()
+            shape = tuple(int(s) for s in obj.attrs["shape"])
+            args = (obj["data"][()], obj["indices"][()], obj["indptr"][()])
+            if encoding == "csr_matrix":
+                x_raw = sparse.csr_matrix(args, shape=shape)
+            elif encoding == "csc_matrix":
+                x_raw = sparse.csc_matrix(args, shape=shape)
+            else:
+                raise ValueError(f"Unsupported sparse X encoding in {data_file_path}: {encoding!r}")
+        else:
+            x_raw = obj[()]
+
+    if x_raw.shape[1] != len(gene_names):
+        raise ValueError(f"X has {x_raw.shape[1]} columns but var has {len(gene_names)} genes.")
+
+    def column_at(i: int) -> np.ndarray:
+        column = x_raw[:, i]
+        if sparse.issparse(column):
+            column = column.todense()
+        return np.asarray(column, dtype=np.float64).ravel()
+
+    return _build_nodes(
+        gene_names,
+        column_at,
+        discretizer=discretizer,
+        estimator=estimator,
+        number_of_bins=number_of_bins,
+        bb_backend=bb_backend,
+        verbose=verbose,
+    )
 
 
 def _get_nodes_h5(

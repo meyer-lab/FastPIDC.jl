@@ -18,7 +18,7 @@ index them in 64-bit; see the indexing contract in the kernel source.
 from __future__ import annotations
 
 import os
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 import numpy as np
@@ -69,13 +69,65 @@ def cuda_available() -> bool:
         return False
 
 
-@lru_cache(maxsize=1)
+#: Any kernel in the source will do; this one is compiled to force the module
+#: to materialize. ``RawModule`` is lazy, so without a probe an unsupported
+#: architecture would not fail until some arbitrary later call site.
+_PROBE_KERNEL = "joint_counts_kernel"
+_BASE_NVRTC_OPTIONS = ("--std=c++11",)
+
+
+@cache
+def _load_module_for_arch(compute_capability: str):
+    """Compile the kernels, falling back to PTX on an unsupported GPU.
+
+    ``compute_capability`` only keys the cache. What cupy emits depends on
+    the current device, so a process touching two GPUs must not reuse one
+    module across both - which a single global cache would do.
+
+    cupy compiles to a cubin for ``min(device capability, NVRTC's maximum)``.
+    On a card newer than the installed cupy that minimum is *below* the
+    device, so the cubin cannot be loaded and the driver raises
+    ``CUDA_ERROR_NO_BINARY_FOR_GPU`` - measured on an RTX 5080 (cc 12.0)
+    against cupy 14.2.0, whose NVRTC caps out lower. Setting cupy's
+    ``_use_ptx`` makes it emit PTX for that same capped architecture
+    instead, which the driver JITs *forward* to the real device. This is
+    exactly what ``CUPY_COMPILE_WITH_PTX=1`` does; cupy reads that
+    environment variable into the flag once at import, so flipping the flag
+    is the only way to reach it from inside a running process.
+
+    Passing ``--gpu-architecture`` ourselves does not work: it collides with
+    the ``-arch`` cupy already supplies, and a value above NVRTC's maximum
+    is rejected outright.
+
+    The fallback is numerically free - on HSC a 4090 (native cubin), a 5080
+    (PTX JIT) and the CPU backend agree bit for bit.
+    """
+    import cupy as cp
+
+    source = _KERNEL_SOURCE_PATH.read_text()
+
+    def build():
+        # RawModule is lazy, so compile and load a kernel here: otherwise an
+        # unloadable binary surfaces at an arbitrary later call site.
+        module = cp.RawModule(code=source, options=_BASE_NVRTC_OPTIONS)
+        module.get_function(_PROBE_KERNEL)
+        return module
+
+    try:
+        return build()
+    except cp.cuda.driver.CUDADriverError:
+        cp.cuda.compiler._use_ptx = True
+        # The architecture choice is memoized per device, so the retry would
+        # otherwise reuse the cubin decision that just failed.
+        cp.clear_memo()
+        return build()
+
+
 def _load_module():
     import cupy as cp
 
     _ensure_cuda_path()
-    source = _KERNEL_SOURCE_PATH.read_text()
-    return cp.RawModule(code=source, options=("--std=c++11",))
+    return _load_module_for_arch(cp.cuda.Device().compute_capability)
 
 
 def _gpu_memory_budget_percent_label(
@@ -172,8 +224,7 @@ def _puc_memory_plan(
         + 2 * n * n * np.dtype(np.float64).itemsize
     )
     bytes_per_chunk_column = (
-        k_bins * k_bins * n * np.dtype(np.int32).itemsize
-        + k_bins * n * np.dtype(np.float64).itemsize
+        k_bins * k_bins * n * np.dtype(np.int32).itemsize + k_bins * n * np.dtype(np.float64).itemsize
     )
 
     if fixed_bytes + bytes_per_chunk_column > budget_bytes:
@@ -507,9 +558,7 @@ def _flatten_bb_batch(
     with 0-based per-gene offsets."""
     unique_count_values = [int(problems[i].prefix_counts.size) for i in problem_indices]
     if any(u > _KERNEL_INT_MAX for u in unique_count_values):
-        raise ValueError(
-            f"Bayesian-blocks CUDA backend supports at most {_KERNEL_INT_MAX} unique values per gene"
-        )
+        raise ValueError(f"Bayesian-blocks CUDA backend supports at most {_KERNEL_INT_MAX} unique values per gene")
     unique_counts = np.asarray(unique_count_values, dtype=np.int32)
 
     state_offsets = np.zeros(len(problem_indices), dtype=np.int64)
@@ -653,9 +702,7 @@ def solve_bayesian_blocks_cuda(
     sample_count = max(int(round(float(p.prefix_counts[-1]))) for p in problems)
     max_u = max(int(p.prefix_counts.size) for p in problems)
     if max_u > _KERNEL_INT_MAX:
-        raise ValueError(
-            f"Bayesian-blocks CUDA backend supports at most {_KERNEL_INT_MAX} unique values per gene"
-        )
+        raise ValueError(f"Bayesian-blocks CUDA backend supports at most {_KERNEL_INT_MAX} unique values per gene")
 
     # A cumulative prefix count reaches the observation count, and back-pointers
     # only need to index candidates up to U_g, so pick the narrowest exact type.
