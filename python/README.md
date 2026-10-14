@@ -46,6 +46,35 @@ subsequent line is `label value1 value2 ...`.
 `fastpidc.write_network_file`/`write_network_npy` to save it, and
 `fastpidc.get_adjacency_matrix` to threshold it into an adjacency matrix.
 
+## Perturbation-aware inference
+
+When the data carries a per-cell perturbation label - which gene was targeted,
+and in which direction - `fastpidc.perturbation` offers a stronger quantity
+than observational dependence: the mutual information between the
+*intervention* and a gene's expression.
+
+```python
+from fastpidc.io import get_nodes, read_h5ad_obs
+from fastpidc.perturbation import PerturbationDesign, intervention_information
+
+nodes = get_nodes("experiment.h5ad")
+obs = read_h5ad_obs("experiment.h5ad", ["target_gene", "perturbation_type"])
+design = PerturbationDesign.from_obs(obs, [n.label for n in nodes])
+T = intervention_information(nodes, design)["T"]      # T[a, b] = I(P_a ; B)
+```
+
+Because cells are assigned to conditions by design, `T` is interventional
+rather than associational, and it is asymmetric - so one matrix both ranks
+edges and orients them, with no fitted parameters. It has rows only for genes
+that were actually perturbed, so it supplements PIDC rather than replacing it.
+
+This mode is additive: on control cells alone, or on data with no labels,
+FastPIDC behaves exactly as before.
+
+See [`docs/interventional.md`](docs/interventional.md) for the definition, the
+estimator caveats, the positive control to run first, the benchmark results
+(including where it loses), and the approaches that were tried and dropped.
+
 ## Command line
 
 ```sh
